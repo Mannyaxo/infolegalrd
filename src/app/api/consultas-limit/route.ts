@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Database, ConsultasDiariasUpdate } from "@/lib/supabase/types";
+import type { Database } from "@/lib/supabase/types";
 
 const LIMITE_GRATIS = 5;
 
@@ -76,10 +76,11 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    const payload: ConsultasDiariasUpdate = {
-      cantidad: Number(existing.cantidad ?? 0) + 1,
-    };
-    await supabase.from("consultas_diarias").update(payload).eq("id", existing.id);
+    // Parche para Vercel: evita error "parameter of type never" cuando los tipos de Supabase no se resuelven en el build
+    await (supabase as any)
+      .from("consultas_diarias")
+      .update({ cantidad: (existing.cantidad ?? 0) + 1 })
+      .eq("id", existing.id);
   } else {
     await supabase
       .from("consultas_diarias")
