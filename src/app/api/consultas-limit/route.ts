@@ -76,10 +76,11 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    const payload: Database["public"]["Tables"]["consultas_diarias"]["Update"] = {
-      cantidad: (existing.cantidad ?? 0) + 1,
-    };
-    await supabase.from("consultas_diarias").update(payload).eq("id", existing.id);
+    type ConsultasUpdate = Database["public"]["Tables"]["consultas_diarias"]["Update"];
+    await supabase
+      .from("consultas_diarias")
+      .update({ cantidad: (existing.cantidad ?? 0) + 1 } as ConsultasUpdate)
+      .eq("id", existing.id);
   } else {
     await supabase
       .from("consultas_diarias")
