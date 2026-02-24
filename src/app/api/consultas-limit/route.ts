@@ -1,18 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-
-type ConsultasDiariasRow = {
-  id: string;
-  user_id: string;
-  fecha: string;
-  cantidad: number;
-  created_at?: string;
-};
-
-type ConsultasDiariasUpdate = {
-  cantidad?: number;
-  [key: string]: any;
-};
+import type { Database } from "@/lib/supabase/types";
 
 const LIMITE_GRATIS = 5;
 
@@ -20,7 +8,7 @@ function getSupabaseServer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return null;
-  return createClient(url, key);
+  return createClient<Database>(url, key);
 }
 
 /** GET: devuelve { permitido: boolean, usadas: number, limite: number } */

@@ -17,11 +17,8 @@ export type Database = {
           created_at?: string;
         };
         Update: {
-          id?: string;
-          user_id?: string;
-          fecha?: string;
           cantidad?: number;
-          created_at?: string;
+          [key: string]: any;
         };
       };
       faqs: {
@@ -37,6 +34,3 @@ export type Database = {
     };
   };
 };
-
-/** Para .update() en consultas_diarias; evita error de tipo "never" en build (p. ej. Vercel). */
-export type ConsultasDiariasUpdate = Database["public"]["Tables"]["consultas_diarias"]["Update"];
