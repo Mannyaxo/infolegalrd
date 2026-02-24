@@ -47,8 +47,8 @@ export function FaqSection() {
       .from("faqs")
       .select("id, category, question, answer")
       .order("category")
-      .then(({ data }) => {
-        if (data && data.length > 0) setFaqs(data as Faq[]);
+      .then(({ data }: { data: Faq[] | null }) => {
+        if (data && data.length > 0) setFaqs(data);
       })
       .catch(() => {});
   }, [supabase]);
