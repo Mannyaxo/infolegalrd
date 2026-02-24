@@ -77,12 +77,12 @@ export async function POST(request: NextRequest) {
   const existing = data as { id: string; cantidad: number } | null;
 
   if (existing) {
-    await (supabase as any)
+    await supabase
       .from("consultas_diarias")
       .update({ cantidad: (existing.cantidad ?? 0) + 1 })
       .eq("id", existing.id);
   } else {
-    await (supabase as any)
+    await supabase
       .from("consultas_diarias")
       .insert({
         user_id: userId,
