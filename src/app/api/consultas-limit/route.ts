@@ -2,6 +2,14 @@ import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
 import type { Database } from "@/lib/supabase/client";
 
+type ConsultasDiarias = {
+  id: string;
+  user_id: string;
+  fecha: string;
+  cantidad: number;
+  [key: string]: any; // por si hay columnas extras
+};
+
 const LIMITE_GRATIS = 5;
 const HOY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
@@ -77,14 +85,17 @@ export async function POST(request: NextRequest) {
   if (existing) {
     await supabase
       .from("consultas_diarias")
-      .update({ cantidad: existing.cantidad + 1 })
-      .eq("id", existing.id);
+      .update({ cantidad: (existing.cantidad || 0) + 1 } as Partial<ConsultasDiarias>)
+      .eq("id", existing.id)
+      .select();
   } else {
-    await supabase.from("consultas_diarias").insert({
-      user_id: userId,
-      fecha: HOY,
-      cantidad: 1,
-    });
+    await supabase
+      .from("consultas_diarias")
+      .insert({
+        user_id: userId,
+        fecha: HOY,
+        cantidad: 1,
+      } as ConsultasDiarias);
   }
 
   return NextResponse.json({ ok: true });
