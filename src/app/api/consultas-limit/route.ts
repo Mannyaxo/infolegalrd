@@ -68,20 +68,22 @@ export async function POST(request: NextRequest) {
   }
 
   const today = new Date().toISOString().split("T")[0];
-  const { data: existing } = await supabase
+  const { data } = await supabase
     .from("consultas_diarias")
     .select("id, cantidad")
     .eq("user_id", userId)
     .eq("fecha", today)
     .maybeSingle();
+  const existing = data as { id: string; cantidad: number } | null;
 
   if (existing) {
-    const newCantidad = (existing.cantidad ?? 0) + 1;
-    // Fix Vercel: el cliente tipado con Database infiere .update() como never en el build; esta aserción evita el error
+    const row = existing as { id: string; cantidad: number };
+    const newCantidad = (row.cantidad ?? 0) + 1;
+    // Fix Vercel: cliente tipado infiere .update() y fila como never; aserciones evitan el error
     await (supabase as any)
       .from("consultas_diarias")
       .update({ cantidad: newCantidad })
-      .eq("id", existing.id);
+      .eq("id", row.id);
   } else {
     await supabase
       .from("consultas_diarias")
