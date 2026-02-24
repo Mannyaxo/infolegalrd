@@ -37,3 +37,6 @@ export type Database = {
     };
   };
 };
+
+/** Para .update() en consultas_diarias; evita error de tipo "never" en build (p. ej. Vercel). */
+export type ConsultasDiariasUpdate = Database["public"]["Tables"]["consultas_diarias"]["Update"];

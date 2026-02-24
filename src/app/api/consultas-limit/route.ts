@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/types";
+import type { Database, ConsultasDiariasUpdate } from "@/lib/supabase/types";
 
 const LIMITE_GRATIS = 5;
 
@@ -76,10 +76,9 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    type ConsultasUpdate = Database["public"]["Tables"]["consultas_diarias"]["Update"];
     await supabase
       .from("consultas_diarias")
-      .update({ cantidad: (existing.cantidad ?? 0) + 1 } as ConsultasUpdate)
+      .update({ cantidad: (existing.cantidad ?? 0) + 1 } as ConsultasDiariasUpdate)
       .eq("id", existing.id);
   } else {
     await supabase
