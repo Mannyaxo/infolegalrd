@@ -76,9 +76,11 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    await supabase
+    const newCantidad = (existing.cantidad ?? 0) + 1;
+    // Fix Vercel: el cliente tipado con Database infiere .update() como never en el build; esta aserción evita el error
+    await (supabase as any)
       .from("consultas_diarias")
-      .update({ cantidad: (existing.cantidad ?? 0) + 1 })
+      .update({ cantidad: newCantidad })
       .eq("id", existing.id);
   } else {
     await supabase
