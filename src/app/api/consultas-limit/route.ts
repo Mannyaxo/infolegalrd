@@ -1,15 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/types";
+import { getSupabaseServer } from "@/lib/supabase/server";
 
 const LIMITE_GRATIS = 5;
-
-function getSupabaseServer() {
-  const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
-  if (!url || !key) return null;
-  return createClient<Database>(url, key);
-}
 
 /** GET: devuelve { permitido: boolean, usadas: number, limite: number } */
 export async function GET(request: NextRequest) {
@@ -68,13 +60,12 @@ export async function POST(request: NextRequest) {
   }
 
   const today = new Date().toISOString().split("T")[0];
-  const { data } = await supabase
+  const { data: existing } = await supabase
     .from("consultas_diarias")
     .select("id, cantidad")
     .eq("user_id", userId)
     .eq("fecha", today)
     .maybeSingle();
-  const existing = data as { id: string; cantidad: number } | null;
 
   if (existing) {
     await supabase
@@ -84,11 +75,7 @@ export async function POST(request: NextRequest) {
   } else {
     await supabase
       .from("consultas_diarias")
-      .insert({
-        user_id: userId,
-        fecha: today,
-        cantidad: 1
-      });
+      .insert({ user_id: userId, fecha: today, cantidad: 1 });
   }
 
   return NextResponse.json({ ok: true });
