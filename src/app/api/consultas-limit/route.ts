@@ -7,7 +7,8 @@ type ConsultasDiarias = {
   user_id: string;
   fecha: string;
   cantidad: number;
-  [key: string]: any; // por si hay columnas extras
+  created_at?: string; // opcional si existe
+  [key: string]: any;   // por si hay columnas extras
 };
 
 const LIMITE_GRATIS = 5;
@@ -95,7 +96,8 @@ export async function POST(request: NextRequest) {
         user_id: userId,
         fecha: HOY,
         cantidad: 1,
-      } as ConsultasDiarias);
+      } as ConsultasDiarias)
+      .select();
   }
 
   return NextResponse.json({ ok: true });
