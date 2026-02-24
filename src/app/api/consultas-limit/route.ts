@@ -1,14 +1,26 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient, type SupabaseClient } from "@supabase/supabase-js";
-import type { Database } from "@/lib/supabase/types";
+import { createClient } from "@supabase/supabase-js";
+
+type ConsultasDiariasRow = {
+  id: string;
+  user_id: string;
+  fecha: string;
+  cantidad: number;
+  created_at?: string;
+};
+
+type ConsultasDiariasUpdate = {
+  cantidad?: number;
+  [key: string]: any;
+};
 
 const LIMITE_GRATIS = 5;
 
-function getSupabaseServer(): SupabaseClient<Database> | null {
+function getSupabaseServer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return null;
-  return createClient<Database>(url, key);
+  return createClient(url, key);
 }
 
 /** GET: devuelve { permitido: boolean, usadas: number, limite: number } */
@@ -76,8 +88,7 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    // Fix build Vercel: (supabase as any) evita tipo "never" en .update()
-    await (supabase as any)
+    await supabase
       .from("consultas_diarias")
       .update({ cantidad: (existing.cantidad ?? 0) + 1 })
       .eq("id", existing.id);
@@ -87,7 +98,7 @@ export async function POST(request: NextRequest) {
       .insert({
         user_id: userId,
         fecha: today,
-        cantidad: 1,
+        cantidad: 1
       });
   }
 
