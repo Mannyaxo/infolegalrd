@@ -12,7 +12,6 @@ type ConsultasDiarias = {
 };
 
 const LIMITE_GRATIS = 5;
-const HOY = new Date().toISOString().slice(0, 10); // YYYY-MM-DD
 
 function getSupabaseServer() {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
@@ -23,6 +22,7 @@ function getSupabaseServer() {
 
 /** GET: devuelve { permitido: boolean, usadas: number, limite: number } */
 export async function GET(request: NextRequest) {
+  const HOY = new Date().toISOString().split("T")[0];
   const userId = request.nextUrl.searchParams.get("userId");
   if (!userId) {
     return NextResponse.json({ permitido: true, usadas: 0, limite: LIMITE_GRATIS });
@@ -76,28 +76,27 @@ export async function POST(request: NextRequest) {
     return NextResponse.json({ ok: true });
   }
 
+  const today = new Date().toISOString().split("T")[0];
   const { data: existing } = await supabase
     .from("consultas_diarias")
     .select("id, cantidad")
     .eq("user_id", userId)
-    .eq("fecha", HOY)
+    .eq("fecha", today)
     .maybeSingle();
 
   if (existing) {
     await supabase
       .from("consultas_diarias")
-      .update({ cantidad: (existing.cantidad || 0) + 1 } as Partial<ConsultasDiarias>)
-      .eq("id", existing.id)
-      .select();
+      .update({ cantidad: (existing.cantidad ?? 0) + 1 })
+      .eq("id", existing.id);
   } else {
     await supabase
       .from("consultas_diarias")
       .insert({
         user_id: userId,
-        fecha: HOY,
+        fecha: today,
         cantidad: 1,
-      } as ConsultasDiarias)
-      .select();
+      });
   }
 
   return NextResponse.json({ ok: true });
