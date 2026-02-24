@@ -85,7 +85,7 @@ export async function POST(request: NextRequest) {
       .update({ cantidad: newCantidad })
       .eq("id", row.id);
   } else {
-    await supabase
+    await (supabase as any)
       .from("consultas_diarias")
       .insert({
         user_id: userId,
