@@ -14,7 +14,12 @@ export interface Database {
       consultas_diarias: {
         Row: { id: string; user_id: string; fecha: string; cantidad: number };
         Insert: { id?: string; user_id: string; fecha: string; cantidad: number };
-        Update: { cantidad?: number };
+        Update: {
+          id?: string;
+          user_id?: string;
+          fecha?: string;
+          cantidad?: number;
+        };
       };
       usuarios_premium: {
         Row: { id: string; user_id: string; stripe_subscription_id: string | null; activo: boolean };
