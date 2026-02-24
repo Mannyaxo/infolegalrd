@@ -76,7 +76,7 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    // Parche para Vercel: evita error "parameter of type never" cuando los tipos de Supabase no se resuelven en el build
+    // Fix build Vercel: (supabase as any) evita tipo "never" en .update()
     await (supabase as any)
       .from("consultas_diarias")
       .update({ cantidad: (existing.cantidad ?? 0) + 1 })
