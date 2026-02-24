@@ -1,0 +1,27 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+:root {
+  --foreground: #0f172a;
+  --background: #f8fafc;
+  --legal-dark: #1e3a5f;
+  --legal-accent: #c9a227;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --foreground: #f1f5f9;
+    --background: #0f172a;
+  }
+}
+
+body {
+  color: var(--foreground);
+  background: var(--background);
+}
+
+/* Aviso destacado para disclaimers */
+.disclaimer-box {
+  @apply border-l-4 border-amber-500 bg-amber-50 dark:bg-amber-950/30 dark:border-amber-400 text-amber-900 dark:text-amber-100;
+}
