@@ -1,10 +1,10 @@
 import { NextRequest, NextResponse } from "next/server";
-import { createClient } from "@supabase/supabase-js";
+import { createClient, type SupabaseClient } from "@supabase/supabase-js";
 import type { Database, ConsultasDiariasUpdate } from "@/lib/supabase/types";
 
 const LIMITE_GRATIS = 5;
 
-function getSupabaseServer() {
+function getSupabaseServer(): SupabaseClient<Database> | null {
   const url = process.env.NEXT_PUBLIC_SUPABASE_URL;
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY ?? process.env.NEXT_PUBLIC_SUPABASE_ANON_KEY;
   if (!url || !key) return null;
@@ -76,10 +76,10 @@ export async function POST(request: NextRequest) {
     .maybeSingle();
 
   if (existing) {
-    await supabase
-      .from("consultas_diarias")
-      .update({ cantidad: (existing.cantidad ?? 0) + 1 } as ConsultasDiariasUpdate)
-      .eq("id", existing.id);
+    const payload: ConsultasDiariasUpdate = {
+      cantidad: Number(existing.cantidad ?? 0) + 1,
+    };
+    await supabase.from("consultas_diarias").update(payload).eq("id", existing.id);
   } else {
     await supabase
       .from("consultas_diarias")

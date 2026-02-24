@@ -41,3 +41,8 @@ CREATE POLICY "usuarios_premium select own" ON public.usuarios_premium FOR SELEC
 
 -- Datos iniciales opcionales (las FAQs por defecto están en el código; aquí puedes añadir más)
 -- INSERT INTO public.faqs (category, question, answer) VALUES ...
+
+-- Opcional: mejorar policy UPDATE para que valide también el nuevo row (ejecutar en SQL Editor si ya aplicaste el schema)
+-- DROP POLICY IF EXISTS "consultas_diarias update own" ON public.consultas_diarias;
+-- CREATE POLICY "consultas_diarias update own" ON public.consultas_diarias
+--   FOR UPDATE USING (auth.uid() = user_id) WITH CHECK (auth.uid() = user_id);
