@@ -1,9 +1,10 @@
 "use client";
 
 import { createContext, useContext, useMemo } from "react";
-import { createClient, type SupabaseClient } from "@/lib/supabase/client";
+import { createClient, type Database } from "@/lib/supabase/client";
+import type { SupabaseClient } from "@supabase/supabase-js";
 
-const Context = createContext<SupabaseClient | null>(null);
+const Context = createContext<SupabaseClient<Database> | null>(null);
 
 export function SupabaseProvider({ children }: { children: React.ReactNode }) {
   const client = useMemo(() => {
@@ -14,6 +15,10 @@ export function SupabaseProvider({ children }: { children: React.ReactNode }) {
       return null;
     }
   }, []);
+
+  if (!client) {
+    return null;
+  }
 
   return <Context.Provider value={client}>{children}</Context.Provider>;
 }
