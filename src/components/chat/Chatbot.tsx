@@ -19,7 +19,12 @@ function SendIcon() {
   );
 }
 
-export function Chatbot() {
+type ChatbotProps = {
+  suggestedQuery?: string;
+  onSuggestionApplied?: () => void;
+};
+
+export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = {}) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
   const [loading, setLoading] = useState(false);
@@ -55,6 +60,13 @@ export function Chatbot() {
   useEffect(() => {
     bottomRef.current?.scrollIntoView({ behavior: "smooth" });
   }, [messages]);
+
+  useEffect(() => {
+    if (suggestedQuery) {
+      setInput(suggestedQuery);
+      onSuggestionApplied?.();
+    }
+  }, [suggestedQuery, onSuggestionApplied]);
 
   const send = async () => {
     const text = input.trim();
@@ -151,27 +163,47 @@ export function Chatbot() {
         : "";
 
   return (
-    <section className="mx-auto w-[90%] max-w-[1200px] font-sans">
-      <div className="rounded-xl border border-slate-200 bg-[#f9fafb] shadow-lg dark:border-slate-600 dark:bg-slate-800/50">
+    <section className="w-full font-sans">
+      <div className="rounded-xl border border-slate-200 bg-white shadow-lg dark:border-slate-600 dark:bg-slate-800/50">
         {limitText && (
           <div className="border-b border-slate-200 px-4 py-2 dark:border-slate-600">
             <p className="text-xs text-slate-500 dark:text-slate-400">{limitText}</p>
           </div>
         )}
 
-        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-2 dark:border-slate-600">
-          <span className="text-sm text-slate-500 dark:text-slate-400">
-            {maxReliability ? "Modo: Máxima Confiabilidad" : "Modo: Normal Seguro"}
-          </span>
-          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
-            <input
-              type="checkbox"
-              checked={maxReliability}
-              onChange={(e) => setMaxReliability(e.target.checked)}
-              className="h-4 w-4 rounded border-slate-300 text-[#1e40af] focus:ring-[#1e40af] dark:border-slate-500"
-            />
-            <span>Máxima Confiabilidad</span>
-          </label>
+        {/* Selector de modo tipo card */}
+        <div className="border-b border-slate-200 px-4 py-4 dark:border-slate-600">
+          <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-400">Modo de respuesta</p>
+          <div className="grid gap-3 sm:grid-cols-2">
+            <button
+              type="button"
+              onClick={() => setMaxReliability(false)}
+              className={`rounded-xl border-2 p-4 text-left transition-colors ${
+                !maxReliability
+                  ? "border-[#1e40af] bg-blue-50/50 dark:border-blue-500 dark:bg-blue-900/20"
+                  : "border-slate-200 bg-slate-50/50 hover:border-slate-300 dark:border-slate-600 dark:bg-slate-800/50 dark:hover:border-slate-500"
+              }`}
+            >
+              <span className="font-medium text-slate-900 dark:text-white">Normal Seguro</span>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Respuesta rápida estructurada
+              </p>
+            </button>
+            <button
+              type="button"
+              onClick={() => setMaxReliability(true)}
+              className={`rounded-xl border-2 p-4 text-left transition-colors ${
+                maxReliability
+                  ? "border-[#1e40af] bg-blue-50/50 dark:border-blue-500 dark:bg-blue-900/20"
+                  : "border-slate-200 bg-slate-50/50 hover:border-slate-300 dark:border-slate-600 dark:bg-slate-800/50 dark:hover:border-slate-500"
+              }`}
+            >
+              <span className="font-medium text-slate-900 dark:text-white">Máxima Confiabilidad</span>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Revisión judicial adicional y verificación
+              </p>
+            </button>
+          </div>
         </div>
 
         <div className="flex min-h-[75vh] flex-col">
