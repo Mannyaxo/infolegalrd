@@ -1,5 +1,7 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DISCLAIMER_PREFIX } from "@/lib/chat-guardrails";
+import { retrieveConstitutionChunks, formatConstitutionContext } from "@/lib/rag/constitution";
+import { getSupabaseServer } from "@/lib/supabase/server";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -389,6 +391,18 @@ export async function POST(request: NextRequest) {
 
     const historyText = formatHistory(history);
 
+    // Contexto RAG opcional (Constitución RD vigente)
+    let ragContext = { text: "", citation: null as { instrument: string; canonical_key: string; published_date: string; source_url: string; gazette_ref?: string | null } | null };
+    try {
+      const chunks = await retrieveConstitutionChunks(message, 6);
+      ragContext = formatConstitutionContext(chunks);
+    } catch {
+      // RAG no disponible o sin embeddings
+    }
+    const ragBlock = ragContext.text
+      ? `\n\nContexto oficial (Constitución RD, versión vigente):\n${truncate(ragContext.text, 8000)}\n\nUsa este contexto para citar cuando sea relevante; no inventes artículos.`
+      : "";
+
     // ————— Modo Máxima Confiabilidad (experimental) —————
     if (mode === "max-reliability") {
       const advocateSystem =
@@ -397,7 +411,8 @@ export async function POST(request: NextRequest) {
       const advocateUser =
         `Consulta (general):\n${message}\n\n` +
         (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-        `Redacta un borrador informativo y general.`;
+        ragBlock +
+        `\n\nRedacta un borrador informativo y general.`;
 
       let draft: string;
       try {
@@ -438,6 +453,7 @@ Reglas:
       let judgeUser =
         `Pregunta del usuario:\n${message}\n\n` +
         (historyText ? `Contexto:\n${historyText}\n\n` : "") +
+        (ragContext.text ? `Contexto oficial disponible (verifica citas contra este texto):\n${truncate(ragContext.text, 4000)}\n\n` : "") +
         `Borrador a revisar:\n${truncate(draft, 6000)}\n\n` +
         `Devuelve SOLO el JSON con decision, missing_info_questions, risk_flags, final_answer, confidence, caveats, next_steps, audit_summary.`;
 
@@ -585,7 +601,12 @@ Reglas:
         }
       }
 
-      const answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${finalAnswer}`;
+      let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${finalAnswer}`;
+      if (decision !== "NEED_MORE_INFO" && ragContext.citation) {
+        const fuentesSection =
+          `\n\n---\n**Fuentes:**\n- ${ragContext.citation.instrument}: ${ragContext.citation.source_url}\n**Versión usada:** ${ragContext.citation.published_date}`;
+        answerWithDisclaimer += fuentesSection;
+      }
       const payload = {
         type: "answer" as const,
         content: DISCLAIMER_PREFIX + answerWithDisclaimer,
@@ -607,6 +628,22 @@ Reglas:
           audit_summary: auditSummary,
         })
       );
+      try {
+        const supabase = getSupabaseServer();
+        if (supabase) {
+          await (supabase as any).from("legal_audit_log").insert({
+            user_id: body.userId ?? null,
+            mode: "max-reliability",
+            query: message,
+            decision: payload.decision,
+            confidence: payload.confidence,
+            citations: ragContext.citation ? [ragContext.citation] : [],
+            model_used: { judge: "claude" },
+          });
+        }
+      } catch {
+        // no bloquear respuesta por fallo de log
+      }
       return NextResponse.json(payload, { status: 200 });
     }
 
@@ -659,7 +696,8 @@ Reglas:
       `${DISCLAIMER_HARD_RULES}\n` +
       `Tema/pregunta (general): ${message}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-      `Instrucción:\n${promptBusqueda}`;
+      ragBlock +
+      `\n\nInstrucción:\n${promptBusqueda}`;
 
     const tasks: Array<Promise<{ agent: string; ok: true; content: string } | { agent: string; ok: false; error: string }>> =
       [];
@@ -922,6 +960,9 @@ Reglas:
       final = `${note}\n\n${final}`;
     }
 
+    if (ragContext.citation) {
+      final += `\n\n---\n**Fuentes:**\n- ${ragContext.citation.instrument}: ${ragContext.citation.source_url}\n**Versión usada:** ${ragContext.citation.published_date}`;
+    }
     final = DISCLAIMER_PREFIX + final;
 
     console.log("Resumen final: Total agentes contribuyentes: " + successCount + "/5");
