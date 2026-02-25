@@ -24,6 +24,51 @@ type ChatbotProps = {
   onSuggestionApplied?: () => void;
 };
 
+function getAreaFromText(text: string): string {
+  const t = text.toLowerCase();
+  if (/\b(empleado\s+público|map\b|ley\s+41-08|tsa\b|función\s+pública)\b/i.test(t)) return "Administrativo/Laboral público";
+  if (/\b(contrato|arrendamiento|pago|comercial|obligación\s+contractual)\b/i.test(t)) return "Civil/Comercial";
+  if (/\b(denuncia|fiscal|prisión|delito|penal)\b/i.test(t)) return "Penal";
+  if (/\b(pensión|divorcio|custodia|alimentos|familia)\b/i.test(t)) return "Familia";
+  if (/\b(residencia|visa|migración|extranjería)\b/i.test(t)) return "Migración";
+  return "General";
+}
+
+function getNivel(decision?: string, confidence?: number): "Alto" | "Medio" | "Bajo" {
+  if (decision === "NEED_MORE_INFO" || (typeof confidence === "number" && confidence < 0.65)) return "Alto";
+  if (typeof confidence === "number" && confidence <= 0.8) return "Medio";
+  return "Bajo";
+}
+
+function getConfidenceColor(confidence: number): string {
+  if (confidence >= 0.8) return "text-green-700 dark:text-green-300";
+  if (confidence >= 0.65) return "text-amber-700 dark:text-amber-300";
+  return "text-red-700 dark:text-red-300";
+}
+
+function getChecklistByArea(area: string): string[] {
+  const map: Record<string, string[]> = {
+    "Administrativo/Laboral público": ["Carta de nombramiento", "Contrato o acta de posesión", "Comunicaciones del empleador", "Reglamento interno", "Recibos de nómina"],
+    "Civil/Comercial": ["Contrato (si aplica)", "Comprobantes de pago", "Correspondencia", "Facturas o presupuestos"],
+    "Penal": ["Denuncia o querella", "Citación o notificación", "Documentos de identidad", "Pruebas que obren en su poder"],
+    "Familia": ["Partida de nacimiento", "Acta de matrimonio o divorcio", "Comprobantes de ingresos", "Acuerdos previos (si existen)"],
+    "Migración": ["Pasaporte vigente", "Visa o permiso actual", "Comprobante de residencia", "Documentos que acrediten vínculo"],
+    "General": ["Identificación", "Documentos relacionados con su consulta", "Cualquier notificación o escrito relevante"],
+  };
+  return map[area] ?? map["General"];
+}
+
+const RESPONSE_HEADER = "⚖️ Orientación Legal Informativa — RD";
+
+function formatResponseContent(content: string, needMoreInfoQuestions?: string[] | null) {
+  const lines = content.split(/\n/).filter(Boolean);
+  const summaryLines = lines.slice(0, 5);
+  const restLines = lines.slice(5);
+  const hasQuestions = needMoreInfoQuestions && needMoreInfoQuestions.length > 0;
+  const questionsToShow = hasQuestions ? needMoreInfoQuestions.slice(0, 5) : [];
+  return { summaryLines, restLines, questionsToShow };
+}
+
 export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = {}) {
   const [input, setInput] = useState("");
   const [messages, setMessages] = useState<{ role: "user" | "assistant"; content: string }[]>([]);
@@ -42,6 +87,8 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
     risk_flags?: string[];
     questions?: string[];
   } | null>(null);
+  const [showChecklist, setShowChecklist] = useState(false);
+  const [copyFeedback, setCopyFeedback] = useState<"respuesta" | "preguntas" | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const supabase = useSupabase();
   const { user } = useAuth(supabase);
@@ -136,6 +183,7 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
         setMaxReliabilityMeta(null);
       }
 
+      setShowChecklist(false);
       setMessages((m) => [...m, { role: "assistant", content: data.content }]);
 
       if (user?.id) {
@@ -224,6 +272,25 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
             className="flex-1 space-y-4 overflow-y-auto p-4 scroll-smooth"
             style={{ minHeight: "70vh" }}
           >
+            {/* Panel Análisis del caso — solo cuando hay respuesta del asistente */}
+            {messages.length > 0 && messages[messages.length - 1].role === "assistant" && (() => {
+              const lastContent = messages[messages.length - 1].content;
+              const area = getAreaFromText(lastContent);
+              const confidence = maxReliabilityMeta?.confidence ?? 0.8;
+              const nivel = getNivel(maxReliabilityMeta?.decision, confidence);
+              const confPct = Math.round(confidence * 100);
+              return (
+                <div className="rounded-xl border border-slate-200 bg-slate-50/80 px-4 py-3 dark:border-slate-600 dark:bg-slate-800/50">
+                  <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Análisis del caso</p>
+                  <div className="flex flex-wrap gap-2">
+                    <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Área: {area}</span>
+                    <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Nivel: {nivel}</span>
+                    <span className="rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium text-slate-700 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200">Modo: {maxReliability ? "Máxima Confiabilidad" : "Normal Seguro"}</span>
+                    <span className={`rounded-full border border-slate-200 bg-white px-3 py-1 text-xs font-medium dark:border-slate-600 dark:bg-slate-700 ${getConfidenceColor(confidence)}`}>Confianza: {confPct}%</span>
+                  </div>
+                </div>
+              );
+            })()}
             {answerNote && (
               <div className="rounded-xl bg-slate-100 px-4 py-2 text-xs text-slate-600 dark:bg-slate-700/60 dark:text-slate-300">
                 {answerNote}
@@ -249,55 +316,131 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
                 Haz una pregunta general sobre derecho en República Dominicana.
               </p>
             )}
-            {messages.map((msg, i) => (
-              <div key={i} className="space-y-2">
-                <div
-                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-                >
+            {messages.map((msg, i) => {
+              const isLastAssistant = msg.role === "assistant" && i === messages.length - 1;
+              const needMoreInfo = isLastAssistant && maxReliabilityMeta?.decision === "NEED_MORE_INFO";
+              const questions = maxReliabilityMeta?.questions ?? null;
+              const { summaryLines, restLines, questionsToShow } = msg.role === "assistant"
+                ? formatResponseContent(msg.content, needMoreInfo ? questions : null)
+                : { summaryLines: [] as string[], restLines: [] as string[], questionsToShow: [] as string[] };
+
+              return (
+                <div key={i} className="space-y-2">
                   <div
-                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-[1rem] ${msg.role === "user"
-                      ? "bg-blue-100 text-blue-900 dark:bg-blue-900/40 dark:text-blue-100"
-                      : "bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200"
-                    }`}
-                    style={{ lineHeight: 1.6 }}
+                    className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                   >
-                    {msg.role === "assistant" ? (
-                      <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
-                        {msg.content}
-                      </div>
-                    ) : (
-                      <span className="whitespace-pre-wrap">{msg.content}</span>
-                    )}
+                    <div
+                      className={`max-w-[85%] rounded-2xl px-4 py-3 text-[1rem] ${msg.role === "user"
+                        ? "bg-blue-100 text-blue-900 dark:bg-blue-900/40 dark:text-blue-100"
+                        : "bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200"
+                      }`}
+                      style={{ lineHeight: 1.6 }}
+                    >
+                      {msg.role === "assistant" ? (
+                        <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
+                          <p className="mb-2 text-xs font-semibold uppercase tracking-wide text-slate-500 dark:text-slate-400">{RESPONSE_HEADER}</p>
+                          {summaryLines.length > 0 && (
+                            <>
+                              <p className="font-medium text-slate-800 dark:text-slate-100">Resumen</p>
+                              <p className="mb-3">{summaryLines.join("\n")}</p>
+                            </>
+                          )}
+                          {needMoreInfo && questionsToShow.length > 0 && (
+                            <>
+                              <p className="mt-2 font-medium text-slate-800 dark:text-slate-100">Para orientar mejor necesito:</p>
+                              <ul className="mt-1 list-disc space-y-0.5 pl-5">
+                                {questionsToShow.map((q, idx) => (
+                                  <li key={idx}>{q}</li>
+                                ))}
+                              </ul>
+                              {restLines.length > 0 && <p className="mt-3">{restLines.join("\n")}</p>}
+                            </>
+                          )}
+                          {!needMoreInfo && restLines.length > 0 && <p>{restLines.join("\n")}</p>}
+                          {summaryLines.length === 0 && restLines.length === 0 && !(needMoreInfo && questionsToShow.length > 0) && <p>{msg.content}</p>}
+                        </div>
+                      ) : (
+                        <span className="whitespace-pre-wrap">{msg.content}</span>
+                      )}
+                    </div>
                   </div>
-                </div>
-                {msg.role === "assistant" && i === messages.length - 1 && maxReliabilityMeta && (
-                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-slate-600 dark:bg-slate-800/60">
-                    {maxReliabilityMeta.decision && (
-                      <p className="font-medium text-slate-700 dark:text-slate-200">Decisión: {maxReliabilityMeta.decision}</p>
-                    )}
-                    {typeof maxReliabilityMeta.confidence === "number" && (
-                      <p className="mt-1 text-slate-600 dark:text-slate-300">Confianza: {(maxReliabilityMeta.confidence * 100).toFixed(0)}%</p>
-                    )}
-                    {maxReliabilityMeta.questions && maxReliabilityMeta.questions.length > 0 && (
-                      <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600 dark:text-slate-300">
-                        {maxReliabilityMeta.questions.map((q, idx) => (
-                          <li key={idx}>{q}</li>
+                  {/* Meta y botones solo en última respuesta del asistente */}
+                  {isLastAssistant && maxReliabilityMeta && maxReliabilityMeta.decision !== "NEED_MORE_INFO" && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-slate-600 dark:bg-slate-800/60">
+                      {maxReliabilityMeta.decision && (
+                        <p className="font-medium text-slate-700 dark:text-slate-200">Decisión: {maxReliabilityMeta.decision}</p>
+                      )}
+                      {typeof maxReliabilityMeta.confidence === "number" && (
+                        <p className="mt-1 text-slate-600 dark:text-slate-300">Confianza: {(maxReliabilityMeta.confidence * 100).toFixed(0)}%</p>
+                      )}
+                      {maxReliabilityMeta.caveats && maxReliabilityMeta.caveats.length > 0 && (
+                        <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Salvedades:</span> {maxReliabilityMeta.caveats.join(" ")}</p>
+                      )}
+                      {maxReliabilityMeta.next_steps && maxReliabilityMeta.next_steps.length > 0 && (
+                        <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Próximos pasos:</span> {maxReliabilityMeta.next_steps.join(" ")}</p>
+                      )}
+                      {maxReliabilityMeta.risk_flags && maxReliabilityMeta.risk_flags.length > 0 && (
+                        <p className="mt-2 text-amber-700 dark:text-amber-200"><span className="font-medium">Riesgos:</span> {maxReliabilityMeta.risk_flags.join(" ")}</p>
+                      )}
+                    </div>
+                  )}
+                  {/* Botones de acción debajo de la última respuesta */}
+                  {isLastAssistant && (
+                    <div className="flex flex-wrap items-center gap-2">
+                      <button
+                        type="button"
+                        onClick={async () => {
+                          try {
+                            await navigator.clipboard.writeText(messages[i].content);
+                            setCopyFeedback("respuesta");
+                            setTimeout(() => setCopyFeedback(null), 2000);
+                          } catch {
+                            setCopyFeedback(null);
+                          }
+                        }}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        {copyFeedback === "respuesta" ? "✓ Copiado" : "Copiar respuesta"}
+                      </button>
+                      {questions && questions.length > 0 && (
+                        <button
+                          type="button"
+                          onClick={async () => {
+                            try {
+                              await navigator.clipboard.writeText(questions.map((q, idx) => `${idx + 1}. ${q}`).join("\n"));
+                              setCopyFeedback("preguntas");
+                              setTimeout(() => setCopyFeedback(null), 2000);
+                            } catch {
+                              setCopyFeedback(null);
+                            }
+                          }}
+                          className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                        >
+                          {copyFeedback === "preguntas" ? "✓ Copiado" : "Copiar preguntas"}
+                        </button>
+                      )}
+                      <button
+                        type="button"
+                        onClick={() => setShowChecklist((v) => !v)}
+                        className="rounded-lg border border-slate-200 bg-white px-3 py-1.5 text-xs font-medium text-slate-700 shadow-sm transition-colors hover:bg-slate-50 dark:border-slate-600 dark:bg-slate-700 dark:text-slate-200 dark:hover:bg-slate-600"
+                      >
+                        Generar checklist de documentos
+                      </button>
+                    </div>
+                  )}
+                  {isLastAssistant && showChecklist && (
+                    <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 dark:border-slate-600 dark:bg-slate-800/60">
+                      <p className="mb-2 text-xs font-medium uppercase tracking-wide text-slate-500 dark:text-slate-400">Documentos sugeridos según área</p>
+                      <ul className="list-disc space-y-0.5 pl-5 text-sm text-slate-700 dark:text-slate-300">
+                        {getChecklistByArea(getAreaFromText(messages[i].content)).map((doc, idx) => (
+                          <li key={idx}>{doc}</li>
                         ))}
                       </ul>
-                    )}
-                    {maxReliabilityMeta.caveats && maxReliabilityMeta.caveats.length > 0 && (
-                      <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Salvedades:</span> {maxReliabilityMeta.caveats.join(" ")}</p>
-                    )}
-                    {maxReliabilityMeta.next_steps && maxReliabilityMeta.next_steps.length > 0 && (
-                      <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Próximos pasos:</span> {maxReliabilityMeta.next_steps.join(" ")}</p>
-                    )}
-                    {maxReliabilityMeta.risk_flags && maxReliabilityMeta.risk_flags.length > 0 && (
-                      <p className="mt-2 text-amber-700 dark:text-amber-200"><span className="font-medium">Riesgos:</span> {maxReliabilityMeta.risk_flags.join(" ")}</p>
-                    )}
-                  </div>
-                )}
-              </div>
-            ))}
+                    </div>
+                  )}
+                </div>
+              );
+            })}
             {loading && (
               <div className="flex justify-start">
                 <div className="rounded-2xl bg-slate-100 px-4 py-3 dark:bg-slate-700">
