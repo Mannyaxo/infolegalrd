@@ -430,7 +430,7 @@ Schema exacto:
   "audit_summary": "resumen breve del proceso de revisión"
 }
 Reglas:
-- Si faltan hechos esenciales para dar una respuesta segura → decision = "NEED_MORE_INFO" y llena missing_info_questions con 3 a 7 preguntas. En ese caso final_answer puede ser un resumen corto y las preguntas; NO des pasos legales definitivos.
+- Si faltan hechos esenciales para dar una respuesta segura → decision = "NEED_MORE_INFO". En ese caso final_answer DEBE contener SOLO: (1) Un párrafo explicativo breve (máximo 6 líneas), (2) Exactamente 5 preguntas (las más críticas para el caso), (3) Un aviso corto sobre plazos/deadlines sin dar números exactos salvo que se conozca fecha de notificación y foro. NO incluyas en final_answer listas largas de riesgos ni salvedades (esas van en risk_flags/caveats para uso interno).
 - Si confidence < 0.65 → forzar decision = "NEED_MORE_INFO".
 - Si hay contradicción, ambigüedad alta o dos interpretaciones razonables → decision = "HIGH_AMBIGUITY".
 - APPROVE solo si la respuesta es sólida y verificable; REWRITE si el juez puede mejorar el texto y lo hace en final_answer.`;
@@ -464,8 +464,8 @@ Reglas:
       let decision = (judge.decision ?? "REWRITE") as JudgeDecision;
       let finalAnswer = typeof judge.final_answer === "string" ? judge.final_answer : draft;
       let confidence = typeof judge.confidence === "number" ? judge.confidence : 0.5;
-      const missingInfo = Array.isArray(judge.missing_info_questions)
-        ? judge.missing_info_questions.filter((q) => typeof q === "string").slice(0, 7)
+      let missingInfo = Array.isArray(judge.missing_info_questions)
+        ? judge.missing_info_questions.filter((q) => typeof q === "string")
         : [];
       let riskFlags = Array.isArray(judge.risk_flags) ? judge.risk_flags.filter((r) => typeof r === "string") : [];
       let caveats = Array.isArray(judge.caveats) ? judge.caveats.filter((c) => typeof c === "string") : [];
@@ -479,6 +479,25 @@ Reglas:
           missingInfo.push("¿Hay plazos o fechas relevantes?");
           missingInfo.push("¿Existe documentación (contrato, notificación) que deba considerarse?");
         }
+      }
+
+      // NEED_MORE_INFO: exactly 5 questions for UX; user-visible answer = paragraph + questions + short deadline warning only
+      if (decision === "NEED_MORE_INFO") {
+        const fiveQuestions = missingInfo.slice(0, 5);
+        while (fiveQuestions.length < 5) {
+          fiveQuestions.push("¿Hay algún otro hecho relevante que debamos considerar?");
+        }
+        missingInfo = fiveQuestions;
+        const deadlineWarning =
+          "Tenga en cuenta que en materia legal suelen existir plazos; consulte con un abogado para conocer los que apliquen a su situación una vez tenga la información concreta.";
+        const paragraphMatch = finalAnswer.split(/\n\n+/)[0];
+        const shortParagraph = paragraphMatch ? paragraphMatch.replace(/\n/g, " ").trim().slice(0, 600) : "Para orientarle con más precisión necesitamos aclarar algunos puntos.";
+        finalAnswer =
+          shortParagraph +
+          "\n\n**Preguntas esenciales:**\n" +
+          fiveQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n") +
+          "\n\n" +
+          deadlineWarning;
       }
 
       // Paso C: HIGH_AMBIGUITY → contra-argumento y segundo juicio
@@ -578,7 +597,6 @@ Reglas:
         caveats,
         next_steps: nextSteps,
         risk_flags: riskFlags,
-        audit_summary: auditSummary,
       };
       console.log(
         JSON.stringify({
@@ -586,6 +604,7 @@ Reglas:
           decision: payload.decision,
           confidence: payload.confidence,
           timestamp: new Date().toISOString(),
+          audit_summary: auditSummary,
         })
       );
       return NextResponse.json(payload, { status: 200 });
@@ -783,21 +802,18 @@ Reglas:
       `Resumen consulta: Agentes OK: ${successCount}/5 | Fallidos: ${failCount} | Modelos usados: ${usedModels.join(", ")}`
     );
 
-    // D) Síntesis final con Claude (juez)
+    // D) Síntesis final con Claude (juez) — Modo "Normal Seguro"
     const judgeSystem =
       `${DISCLAIMER_HARD_RULES}\n` +
-      `Eres el juez/sintetizador final. Debes producir una respuesta educativa y general sobre derecho dominicano.\n` +
+      `Eres el juez/sintetizador final en modo "Normal Seguro". Produce una respuesta educativa y general sobre derecho dominicano.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
-      `REGLA ANTI-ALUCINACIÓN (obligatoria): NUNCA escribas el contenido de un artículo de ley (ej. "El Artículo 66 establece que...") a menos que ese texto exacto aparezca en los resultados de "Búsqueda fuentes RD" o en las respuestas de los agentes. Si solo tienes una mención del número de artículo pero no el texto literal, escribe: "Para el texto exacto del Artículo [N] de la Ley [X] debe consultarse la Gaceta Oficial (gacetaoficial.gob.do) o el texto oficial de la ley." No resumas ni deduzcas el contenido de un artículo: los números de artículo y su contenido real pueden variar entre ediciones y leyes; inventar contenido genera errores graves (ej. confundir estabilidad laboral con trámites de pensión).\n\n` +
-      `Usa los resultados de "Búsqueda fuentes RD" (si aparecen) para verificar y corregir citas antes de redactar; prioriza fuentes oficiales. Si una cita de los agentes no coincide con la búsqueda, no la des por válida o indícalo.\n\n` +
-      `Tu salida debe tener EXACTAMENTE estos 5 bloques numerados y en este orden:\n` +
-      `1. Resumen breve de la consulta\n` +
-      `2. Normativa aplicable (citas textuales de artículos solo cuando tengas el texto verificado; si no, indique al usuario que consulte la Gaceta Oficial)\n` +
-      `3. Análisis jurídico detallado (hechos genéricos → calificación → consecuencias → riesgos)\n` +
-      `4. Recomendaciones prácticas y pasos concretos (siempre generales, nunca personalizados)\n` +
-      `5. Advertencia final obligatoria (en negrita y destacada):\n` +
+      `REGLA ANTI-ALUCINACIÓN (obligatoria): NUNCA cites números de artículo ni plazos exactos (días, meses) a menos que ese dato aparezca textualmente en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado en esas fuentes internas, escribe en términos generales (ej. "existen plazos legales que conviene confirmar con un abogado" o "consulte la Gaceta Oficial para el texto del artículo"). No inventes contenido de artículos ni fechas.\n\n` +
+      `Estructura de tu salida (obligatoria):\n` +
+      `1. **Framework general** (máximo 12 líneas): contexto breve, marco legal genérico y principios aplicables. Sin artículos ni plazos concretos salvo que estén verificados en las fuentes internas.\n` +
+      `2. **Tres preguntas esenciales** que el usuario debería considerar para su situación (genéricas, sin pedir datos personales).\n` +
+      `3. **Orientación adicional** (breve): recomendaciones generales y advertencia final en negrita:\n` +
       `**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
-      `Si alguna cita no puede verificarse con certeza, dilo y sugiere verificar en fuentes oficiales. No inventes artículos, números de sentencia ni fechas.`;
+      `No incluyas bloques largos de normativa ni análisis detallado con artículos no verificados. Prioriza claridad y prudencia.`;
 
     const judgeUser =
       `Consulta (general):\n${message}\n\n` +
@@ -830,7 +846,7 @@ Reglas:
     } catch (claudeErr) {
       console.error("[API Claude] Síntesis falló, usando fallback con otros agentes:", claudeErr);
       const fallbackSystem =
-        `${DISCLAIMER_HARD_RULES}\nSintetiza en español la siguiente información en una respuesta educativa breve con: 1) Resumen, 2) Normativa aplicable, 3) Análisis jurídico, 4) Recomendaciones prácticas, 5) Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
+        `${DISCLAIMER_HARD_RULES}\nSintetiza en español (modo Normal Seguro): 1) Framework general (máx 12 líneas), 2) Tres preguntas esenciales para el usuario, 3) Orientación breve. No cites artículos ni plazos exactos salvo que estén en los datos. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
       const fallbackUser = `Consulta: ${message}\n\nDatos disponibles:\n${results.filter((r) => r.ok).map((r) => `${r.agent}:\n${truncate(r.content, 3000)}`).join("\n\n")}`;
       let fallbackContent = "";
       if (openaiKey) {
