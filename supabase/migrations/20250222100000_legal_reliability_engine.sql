@@ -1,6 +1,7 @@
 -- Legal Reliability Engine v1 + RAG (Piloto Constitución RD)
--- No reemplaza tablas existentes. Ejecutar en SQL Editor de Supabase o via Supabase CLI.
+-- No toca tablas existentes: faqs, consultas_diarias, usuarios_premium.
 
+CREATE EXTENSION IF NOT EXISTS pgcrypto;
 CREATE EXTENSION IF NOT EXISTS vector;
 
 -- 1) sources
