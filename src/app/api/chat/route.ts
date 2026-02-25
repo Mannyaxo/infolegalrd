@@ -20,7 +20,8 @@ Reglas estrictas:
 `;
 
 const BUSQUEDA_PROMPT = (tema: string) =>
-  `Busca y cita textualmente leyes, reglamentos, Constitución RD, jurisprudencia SCJ/TC con números y fechas, doctrina y actualizaciones 2026 relevantes a ${tema}. Prioriza fuentes oficiales: scj.gob.do, tc.gob.do, gacetaoficial.gob.do, mt.gob.do, map.gob.do. Si no puedes verificar una cita textual, indícalo explícitamente y no inventes números ni fechas.`;
+  `Busca y cita textualmente leyes, reglamentos, Constitución RD, jurisprudencia SCJ/TC con números y fechas, doctrina y actualizaciones 2026 relevantes a ${tema}. Prioriza fuentes oficiales: scj.gob.do, tc.gob.do, gacetaoficial.gob.do, mt.gob.do, map.gob.do.
+CRÍTICO: NUNCA inventes o resumas el contenido de un artículo de ley por tu cuenta. Si no tienes el texto literal del artículo frente a ti, escribe "El contenido exacto del artículo [X] debe verificarse en la Gaceta Oficial o en el texto oficial de la ley" en lugar de redactar un resumen. Los números de artículos y su contenido real no siempre coinciden entre leyes; atribuir contenido a un artículo sin verificación genera errores graves. Si no puedes verificar una cita textual, indícalo explícitamente y no inventes números ni fechas.`;
 
 const XAI_URL = "https://api.x.ai/v1/chat/completions";
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
@@ -426,7 +427,7 @@ export async function POST(request: NextRequest) {
             url: XAI_URL,
             apiKey: xaiKey,
             model: MODELS.xai,
-            system: "Eres un agente de búsqueda jurídica. Responde con citas y fuentes oficiales cuando sea posible.",
+            system: "Eres un agente de búsqueda jurídica. Responde con citas y fuentes oficiales cuando sea posible. NUNCA inventes el contenido de un artículo de ley: si no tienes el texto literal, indica que debe verificarse en la Gaceta Oficial (gacetaoficial.gob.do).",
             user: baseUser,
             temperature: 0.2,
             max_tokens: 1800,
@@ -439,7 +440,7 @@ export async function POST(request: NextRequest) {
             url: XAI_URL,
             apiKey: xaiKey,
             model: MODELS.xai_fallback,
-            system: "Eres un agente de búsqueda jurídica. Responde con citas y fuentes oficiales cuando sea posible.",
+            system: "Eres un agente de búsqueda jurídica. Responde con citas y fuentes oficiales cuando sea posible. NUNCA inventes el contenido de un artículo de ley: si no tienes el texto literal, indica que debe verificarse en la Gaceta Oficial (gacetaoficial.gob.do).",
             user: baseUser,
             temperature: 0.2,
             max_tokens: 1800,
@@ -474,7 +475,7 @@ export async function POST(request: NextRequest) {
             url: OPENAI_URL,
             apiKey: openaiKey,
             model: MODELS.openai_primary,
-            system: "Eres un agente de búsqueda jurídica. Responde con citas verificables; no inventes.",
+            system: "Eres un agente de búsqueda jurídica. Responde con citas verificables; no inventes. NUNCA inventes el contenido de un artículo de ley: si no tienes el texto literal, indica que debe verificarse en la Gaceta Oficial (gacetaoficial.gob.do).",
             user: baseUser,
             temperature: 0.2,
             max_tokens: 1800,
@@ -487,7 +488,7 @@ export async function POST(request: NextRequest) {
             url: OPENAI_URL,
             apiKey: openaiKey,
             model: MODELS.openai_fallback,
-            system: "Eres un agente de búsqueda jurídica. Responde con citas verificables; no inventes.",
+            system: "Eres un agente de búsqueda jurídica. Responde con citas verificables; no inventes. NUNCA inventes el contenido de un artículo de ley: si no tienes el texto literal, indica que debe verificarse en la Gaceta Oficial (gacetaoficial.gob.do).",
             user: baseUser,
             temperature: 0.2,
             max_tokens: 1800,
@@ -511,7 +512,7 @@ export async function POST(request: NextRequest) {
           url: GROQ_URL,
           apiKey: groqKey,
           model: MODELS.groq,
-          system: "Eres un agente de búsqueda jurídica. Cita fuentes oficiales si puedes; no inventes.",
+          system: "Eres un agente de búsqueda jurídica. Cita fuentes oficiales si puedes; no inventes. NUNCA inventes el contenido de un artículo de ley: si no tienes el texto literal, indica que debe verificarse en la Gaceta Oficial (gacetaoficial.gob.do).",
           user: baseUser,
           temperature: 0.2,
           max_tokens: 1800,
@@ -560,10 +561,11 @@ export async function POST(request: NextRequest) {
       `${DISCLAIMER_HARD_RULES}\n` +
       `Eres el juez/sintetizador final. Debes producir una respuesta educativa y general sobre derecho dominicano.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
-      `Usa los resultados de "Búsqueda fuentes RD" (si aparecen) para verificar y corregir citas antes de redactar; prioriza fuentes oficiales (gacetaoficial.gob.do, tc.gob.do, map.gob.do, scj.gob.do). Si una cita de los agentes no coincide con la búsqueda, no la des por válida o indícalo.\n\n` +
+      `REGLA ANTI-ALUCINACIÓN (obligatoria): NUNCA escribas el contenido de un artículo de ley (ej. "El Artículo 66 establece que...") a menos que ese texto exacto aparezca en los resultados de "Búsqueda fuentes RD" o en las respuestas de los agentes. Si solo tienes una mención del número de artículo pero no el texto literal, escribe: "Para el texto exacto del Artículo [N] de la Ley [X] debe consultarse la Gaceta Oficial (gacetaoficial.gob.do) o el texto oficial de la ley." No resumas ni deduzcas el contenido de un artículo: los números de artículo y su contenido real pueden variar entre ediciones y leyes; inventar contenido genera errores graves (ej. confundir estabilidad laboral con trámites de pensión).\n\n` +
+      `Usa los resultados de "Búsqueda fuentes RD" (si aparecen) para verificar y corregir citas antes de redactar; prioriza fuentes oficiales. Si una cita de los agentes no coincide con la búsqueda, no la des por válida o indícalo.\n\n` +
       `Tu salida debe tener EXACTAMENTE estos 5 bloques numerados y en este orden:\n` +
       `1. Resumen breve de la consulta\n` +
-      `2. Normativa aplicable (citas textuales de artículos, leyes, reglamentos, Constitución, jurisprudencia con números y fechas)\n` +
+      `2. Normativa aplicable (citas textuales de artículos solo cuando tengas el texto verificado; si no, indique al usuario que consulte la Gaceta Oficial)\n` +
       `3. Análisis jurídico detallado (hechos genéricos → calificación → consecuencias → riesgos)\n` +
       `4. Recomendaciones prácticas y pasos concretos (siempre generales, nunca personalizados)\n` +
       `5. Advertencia final obligatoria (en negrita y destacada):\n` +
