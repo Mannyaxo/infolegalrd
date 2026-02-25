@@ -50,6 +50,37 @@ function truncate(s: string, max = 2500): string {
   return `${s.slice(0, max)}…`;
 }
 
+const OFFICIAL_SITES_RD = "site:gacetaoficial.gob.do OR site:tc.gob.do OR site:map.gob.do OR site:scj.gob.do";
+
+/**
+ * Búsqueda en tiempo real en fuentes oficiales RD para verificar citas y reducir alucinaciones.
+ * Usa Serper (Google Search API) si SERPER_API_KEY está definida; si no, devuelve vacío.
+ */
+async function searchOfficialSourcesRD(tema: string): Promise<string> {
+  const apiKey = process.env.SERPER_API_KEY;
+  if (!apiKey || !tema.trim()) return "";
+
+  const query = `${tema.trim()} ley República Dominicana ${OFFICIAL_SITES_RD}`.slice(0, 200);
+  try {
+    const res = await fetch("https://google.serper.dev/search", {
+      method: "POST",
+      headers: { "X-API-KEY": apiKey, "Content-Type": "application/json" },
+      body: JSON.stringify({ q: query, num: 8 }),
+    });
+    if (!res.ok) return "";
+    const data = (await res.json()) as { organic?: Array<{ title?: string; snippet?: string; link?: string }> };
+    const organic = data.organic ?? [];
+    const snippets = organic
+      .map((o) => [o.title, o.snippet].filter(Boolean).join(": "))
+      .filter(Boolean)
+      .slice(0, 10);
+    const text = snippets.join("\n\n");
+    return text ? truncate(text, 3500) : "";
+  } catch {
+    return "";
+  }
+}
+
 function needsClarificationHeuristic(userMessage: string): boolean {
   const msg = normalizeText(userMessage);
   if (msg.length < 25) return true;
@@ -488,7 +519,24 @@ export async function POST(request: NextRequest) {
           .then((content) => ({ agent: "Groq", ok: true as const, content }))
           .catch((e) => ({ agent: "Groq", ok: false as const, error: e instanceof Error ? e.message : String(e) }))
       );
+    } else {
+      tasks.push(Promise.resolve({ agent: "Groq", ok: false as const, error: "Falta GROQ_API_KEY" }));
     }
+
+    // Búsqueda en fuentes oficiales RD (verificar citas, reducir alucinaciones)
+    tasks.push(
+      searchOfficialSourcesRD(tema)
+        .then((content) => ({
+          agent: "Búsqueda fuentes RD",
+          ok: true as const,
+          content: content || "(Sin resultados de búsqueda; no se dispone de SERPER_API_KEY o no hubo coincidencias.)",
+        }))
+        .catch((e) => ({
+          agent: "Búsqueda fuentes RD",
+          ok: false as const,
+          error: e instanceof Error ? e.message : String(e),
+        }))
+    );
 
     const settled = await Promise.allSettled(tasks);
     const results = settled.map((r) =>
@@ -512,6 +560,7 @@ export async function POST(request: NextRequest) {
       `${DISCLAIMER_HARD_RULES}\n` +
       `Eres el juez/sintetizador final. Debes producir una respuesta educativa y general sobre derecho dominicano.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
+      `Usa los resultados de "Búsqueda fuentes RD" (si aparecen) para verificar y corregir citas antes de redactar; prioriza fuentes oficiales (gacetaoficial.gob.do, tc.gob.do, map.gob.do, scj.gob.do). Si una cita de los agentes no coincide con la búsqueda, no la des por válida o indícalo.\n\n` +
       `Tu salida debe tener EXACTAMENTE estos 5 bloques numerados y en este orden:\n` +
       `1. Resumen breve de la consulta\n` +
       `2. Normativa aplicable (citas textuales de artículos, leyes, reglamentos, Constitución, jurisprudencia con números y fechas)\n` +
@@ -524,7 +573,7 @@ export async function POST(request: NextRequest) {
     const judgeUser =
       `Consulta (general):\n${message}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-      `Resultados de agentes (pueden contener errores; verifica y sintetiza):\n\n` +
+      `Resultados de agentes y búsqueda (pueden contener errores; verifica citas con "Búsqueda fuentes RD" si está disponible y sintetiza):\n\n` +
       results
         .map((r) =>
           r.ok
