@@ -43,14 +43,22 @@ export function FaqSection() {
 
   useEffect(() => {
     if (!supabase) return;
-    supabase
-      .from("faqs")
-      .select("id, category, question, answer")
-      .order("category")
-      .then(({ data }: { data: Faq[] | null }) => {
-        if (data && data.length > 0) setFaqs(data);
-      })
-      .catch(() => {});
+    let isMounted = true;
+    const run = async () => {
+      try {
+        const { data } = await supabase
+          .from("faqs")
+          .select("id, category, question, answer")
+          .order("category");
+        if (isMounted && data && data.length > 0) setFaqs(data as Faq[]);
+      } catch {
+        // ignore
+      }
+    };
+    run();
+    return () => {
+      isMounted = false;
+    };
   }, [supabase]);
 
   return (

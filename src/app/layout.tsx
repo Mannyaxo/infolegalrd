@@ -5,6 +5,8 @@ import "./globals.css";
 import { SupabaseProvider } from "@/components/providers/SupabaseProvider";
 import { Header } from "@/components/layout/Header";
 
+export const dynamic = "force-dynamic";
+
 export const metadata: Metadata = {
   title: "InfoLegal RD – Información legal general República Dominicana",
   description:

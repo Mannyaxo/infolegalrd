@@ -7,18 +7,8 @@ import type { SupabaseClient } from "@supabase/supabase-js";
 const Context = createContext<SupabaseClient<Database> | null>(null);
 
 export function SupabaseProvider({ children }: { children: React.ReactNode }) {
-  const client = useMemo(() => {
-    if (typeof window === "undefined") return null;
-    try {
-      return createClient();
-    } catch {
-      return null;
-    }
-  }, []);
-
-  if (!client) {
-    return null;
-  }
+  const client = useMemo(() => createClient(), []);
+  if (!client) return null;
 
   return <Context.Provider value={client}>{children}</Context.Provider>;
 }

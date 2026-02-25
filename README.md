@@ -38,6 +38,13 @@ Ver **[DEPLOY.md](./DEPLOY.md)** para:
 3. Deploy del proyecto
 4. (Opcional) Stripe para suscripción premium
 
+### Checklist: variables de entorno en producción
+
+- **`.env.local`** solo se usa en desarrollo local; Vercel **no** lo lee.
+- En Vercel: **Project → Settings → Environment Variables** define las variables para **Production**, **Preview** y/o **Development**.
+- Después de añadir o cambiar variables en Vercel, hay que **Redeploy** (Deployments → Redeploy) o hacer **push** de un nuevo commit para que se apliquen.
+- Para comprobar que las variables están disponibles en producción, abre **`https://tu-dominio.vercel.app/api/env-check`** y revisa que los valores `env.*` sean `true` (no se muestran secretos, solo si están definidos y el host de Supabase).
+
 ## Aviso legal
 
 Toda la información de la aplicación es **general y orientativa**. No constituye asesoramiento legal vinculante ni crea relación abogado-cliente. Siempre se debe consultar a un abogado colegiado para el caso específico.

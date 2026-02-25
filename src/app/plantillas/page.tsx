@@ -1,6 +1,8 @@
 import Link from "next/link";
 import { PlantillaAcuerdoTerminacion } from "@/components/plantillas/PlantillaAcuerdoTerminacion";
 
+export const dynamic = "force-dynamic";
+
 export const metadata = {
   title: "Plantillas descargables – InfoLegal RD",
   description: "Modelos de documentos legales informativos para República Dominicana.",

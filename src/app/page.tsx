@@ -1,5 +1,7 @@
 import { Chatbot } from "@/components/chat/Chatbot";
 
+export const dynamic = "force-dynamic";
+
 export default function HomePage() {
   return (
     <div className="mx-auto flex min-h-screen flex-col">
