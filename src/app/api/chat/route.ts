@@ -1,6 +1,6 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DISCLAIMER_PREFIX } from "@/lib/chat-guardrails";
-import { retrieveConstitutionChunks, formatConstitutionContext } from "@/lib/rag/constitution";
+import { retrieveVigenteChunks, formatVigenteContext } from "@/lib/rag/vigente";
 import { getSupabaseServer } from "@/lib/supabase/server";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
@@ -391,16 +391,16 @@ export async function POST(request: NextRequest) {
 
     const historyText = formatHistory(history);
 
-    // Contexto RAG opcional (Constitución RD vigente)
-    let ragContext = { text: "", citation: null as { instrument: string; canonical_key: string; published_date: string; source_url: string; gazette_ref?: string | null } | null };
+    // Contexto RAG opcional (instrumentos VIGENTES: Constitución u otros ingeridos)
+    let ragContext = { text: "", citations: [] as Array<{ title: string; source_url: string; published_date: string; status: string; type?: string; number?: string | null }> };
     try {
-      const chunks = await retrieveConstitutionChunks(message, 6);
-      ragContext = formatConstitutionContext(chunks);
+      const chunks = await retrieveVigenteChunks(message, 6);
+      ragContext = formatVigenteContext(chunks);
     } catch {
       // RAG no disponible o sin embeddings
     }
     const ragBlock = ragContext.text
-      ? `\n\nContexto oficial (Constitución RD, versión vigente):\n${truncate(ragContext.text, 8000)}\n\nUsa este contexto para citar cuando sea relevante; no inventes artículos.`
+      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nCada fragmento tiene: title, type, number, published_date, status, source_url. Responde basándote en este contexto; incluye Confidence (0-1), Caveats, Next steps y Citations (lista de {title, source_url, published_date, status}). No inventes artículos.`
       : "";
 
     // ————— Modo Máxima Confiabilidad (experimental) —————
@@ -602,10 +602,11 @@ Reglas:
       }
 
       let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${finalAnswer}`;
-      if (decision !== "NEED_MORE_INFO" && ragContext.citation) {
-        const fuentesSection =
-          `\n\n---\n**Fuentes:**\n- ${ragContext.citation.instrument}: ${ragContext.citation.source_url}\n**Versión usada:** ${ragContext.citation.published_date}`;
-        answerWithDisclaimer += fuentesSection;
+      if (decision !== "NEED_MORE_INFO" && ragContext.citations.length > 0) {
+        const fuentesLines = ragContext.citations.map(
+          (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
+        );
+        answerWithDisclaimer += `\n\n---\n**Fuentes (Citations):**\n${fuentesLines.join("\n")}`;
       }
       const payload = {
         type: "answer" as const,
@@ -637,8 +638,15 @@ Reglas:
             query: message,
             decision: payload.decision,
             confidence: payload.confidence,
-            citations: ragContext.citation ? [ragContext.citation] : [],
+            citations: ragContext.citations.map((c) => ({
+              title: c.title,
+              source_url: c.source_url,
+              published_date: c.published_date,
+              status: c.status,
+            })),
             model_used: { judge: "claude" },
+            tokens_in: null,
+            tokens_out: null,
           });
         }
       } catch {
@@ -960,8 +968,11 @@ Reglas:
       final = `${note}\n\n${final}`;
     }
 
-    if (ragContext.citation) {
-      final += `\n\n---\n**Fuentes:**\n- ${ragContext.citation.instrument}: ${ragContext.citation.source_url}\n**Versión usada:** ${ragContext.citation.published_date}`;
+    if (ragContext.citations.length > 0) {
+      const fuentesLines = ragContext.citations.map(
+        (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
+      );
+      final += `\n\n---\n**Fuentes (Citations):**\n${fuentesLines.join("\n")}`;
     }
     final = DISCLAIMER_PREFIX + final;
 
