@@ -331,16 +331,41 @@ function safeJsonParse<T>(text: string): T | null {
   }
 }
 
+/** Extrae JSON de texto que puede venir envuelto en ```json ... ``` */
+function extractJson<T>(raw: string): T | null {
+  const trimmed = raw.trim();
+  const codeBlock = /^```(?:json)?\s*([\s\S]*?)```\s*$/m.exec(trimmed);
+  const toParse = codeBlock ? codeBlock[1].trim() : trimmed;
+  return safeJsonParse<T>(toParse);
+}
+
+type JudgeDecision = "APPROVE" | "REWRITE" | "NEED_MORE_INFO" | "HIGH_AMBIGUITY";
+type JudgePayload = {
+  decision?: JudgeDecision;
+  missing_info_questions?: string[];
+  risk_flags?: string[];
+  final_answer?: string;
+  confidence?: number;
+  caveats?: string[];
+  next_steps?: string[];
+  audit_summary?: string;
+};
+
+const MAX_RELIABILITY_DISCLAIMER =
+  "Modo experimental de máxima confiabilidad. Respuesta revisada por juez, pero sigue siendo información general, no asesoría legal.";
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
       message?: string;
       history?: ChatHistoryMessage[];
       userId?: string | null;
+      mode?: string;
     };
 
     const message = typeof body.message === "string" ? body.message.trim() : "";
     const history = Array.isArray(body.history) ? body.history : [];
+    const mode = typeof body.mode === "string" ? body.mode : undefined;
 
     if (!message) {
       return NextResponse.json(
@@ -363,6 +388,208 @@ export async function POST(request: NextRequest) {
     }
 
     const historyText = formatHistory(history);
+
+    // ————— Modo Máxima Confiabilidad (experimental) —————
+    if (mode === "max-reliability") {
+      const advocateSystem =
+        `${DISCLAIMER_HARD_RULES}\n` +
+        `Genera un borrador inicial (draft) de respuesta informativa sobre derecho en República Dominicana. Sé estructurado y prudente. No des asesoría personalizada. El borrador NO es la respuesta final; será revisado por un juez.`;
+      const advocateUser =
+        `Consulta (general):\n${message}\n\n` +
+        (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
+        `Redacta un borrador informativo y general.`;
+
+      let draft: string;
+      try {
+        draft = await callClaudeWithFallback({
+          apiKey: anthropicKey,
+          system: advocateSystem,
+          user: advocateUser,
+          max_tokens: 4096,
+          temperature: 0.2,
+        });
+      } catch (e) {
+        console.error("[max-reliability] Advocate falló:", e instanceof Error ? e.message : String(e));
+        return NextResponse.json(
+          { type: "reject", message: "No se pudo generar el borrador en modo máxima confiabilidad." } satisfies ChatResponse,
+          { status: 503 }
+        );
+      }
+
+      const judgeSystem =
+        `Eres un juez estricto que revisa borradores de respuestas jurídicas informativas (República Dominicana). Tu salida DEBE ser ÚNICAMENTE un JSON válido, sin texto antes ni después.
+Schema exacto:
+{
+  "decision": "APPROVE" | "REWRITE" | "NEED_MORE_INFO" | "HIGH_AMBIGUITY",
+  "missing_info_questions": ["pregunta1", "pregunta2", ...],
+  "risk_flags": ["riesgo1", ...],
+  "final_answer": "texto de la respuesta final para el usuario",
+  "confidence": número entre 0 y 1,
+  "caveats": ["salvedad1", ...],
+  "next_steps": ["paso1", ...],
+  "audit_summary": "resumen breve del proceso de revisión"
+}
+Reglas:
+- Si faltan hechos esenciales para dar una respuesta segura → decision = "NEED_MORE_INFO" y llena missing_info_questions con 3 a 7 preguntas. En ese caso final_answer puede ser un resumen corto y las preguntas; NO des pasos legales definitivos.
+- Si confidence < 0.65 → forzar decision = "NEED_MORE_INFO".
+- Si hay contradicción, ambigüedad alta o dos interpretaciones razonables → decision = "HIGH_AMBIGUITY".
+- APPROVE solo si la respuesta es sólida y verificable; REWRITE si el juez puede mejorar el texto y lo hace en final_answer.`;
+
+      let judgeUser =
+        `Pregunta del usuario:\n${message}\n\n` +
+        (historyText ? `Contexto:\n${historyText}\n\n` : "") +
+        `Borrador a revisar:\n${truncate(draft, 6000)}\n\n` +
+        `Devuelve SOLO el JSON con decision, missing_info_questions, risk_flags, final_answer, confidence, caveats, next_steps, audit_summary.`;
+
+      let judgeRaw: string;
+      try {
+        judgeRaw = await callClaudeWithFallback({
+          apiKey: anthropicKey,
+          system: judgeSystem,
+          user: judgeUser,
+          max_tokens: 4096,
+          temperature: 0.1,
+        });
+      } catch (e) {
+        console.error("[max-reliability] Judge falló:", e instanceof Error ? e.message : String(e));
+        return NextResponse.json(
+          { type: "reject", message: "No se pudo completar la revisión en modo máxima confiabilidad." } satisfies ChatResponse,
+          { status: 503 }
+        );
+      }
+
+      let judge = extractJson<JudgePayload>(judgeRaw);
+      if (!judge) judge = safeJsonParse<JudgePayload>(judgeRaw) || {};
+
+      let decision = (judge.decision ?? "REWRITE") as JudgeDecision;
+      let finalAnswer = typeof judge.final_answer === "string" ? judge.final_answer : draft;
+      let confidence = typeof judge.confidence === "number" ? judge.confidence : 0.5;
+      const missingInfo = Array.isArray(judge.missing_info_questions)
+        ? judge.missing_info_questions.filter((q) => typeof q === "string").slice(0, 7)
+        : [];
+      let riskFlags = Array.isArray(judge.risk_flags) ? judge.risk_flags.filter((r) => typeof r === "string") : [];
+      let caveats = Array.isArray(judge.caveats) ? judge.caveats.filter((c) => typeof c === "string") : [];
+      let nextSteps = Array.isArray(judge.next_steps) ? judge.next_steps.filter((s) => typeof s === "string") : [];
+      let auditSummary = typeof judge.audit_summary === "string" ? judge.audit_summary : "";
+
+      if (confidence < 0.65 && decision !== "NEED_MORE_INFO") {
+        decision = "NEED_MORE_INFO";
+        if (missingInfo.length === 0) {
+          missingInfo.push("¿Puede precisar los hechos principales de su escenario?");
+          missingInfo.push("¿Hay plazos o fechas relevantes?");
+          missingInfo.push("¿Existe documentación (contrato, notificación) que deba considerarse?");
+        }
+      }
+
+      // Paso C: HIGH_AMBIGUITY → contra-argumento y segundo juicio
+      if (decision === "HIGH_AMBIGUITY") {
+        const counterSystem =
+          `${DISCLAIMER_HARD_RULES}\n` +
+          `Genera un contra-argumento o perspectiva alternativa al siguiente borrador jurídico. Objetivo: que un juez pueda contrastar ambas visiones. No des asesoría personalizada.`;
+        const counterUser = `Consulta: ${message}\n\nBorrador actual:\n${truncate(draft, 4000)}\n\nRedacta el contra-argumento o interpretación alternativa (máximo 1.500 caracteres).`;
+
+        let counterArgument = "";
+        if (geminiKey) {
+          try {
+            counterArgument = await callGeminiWithFallback({
+              apiKey: geminiKey,
+              user: `${counterSystem}\n\n${counterUser}`,
+              temperature: 0.3,
+              maxOutputTokens: 800,
+            });
+          } catch {
+            // seguir sin contra-argumento
+          }
+        }
+        if (!counterArgument && openaiKey) {
+          try {
+            counterArgument = await callOpenAIStyle({
+              provider: "OpenAI",
+              url: OPENAI_URL,
+              apiKey: openaiKey,
+              model: MODELS.openai_primary,
+              system: counterSystem,
+              user: counterUser,
+              max_tokens: 800,
+              temperature: 0.3,
+            });
+          } catch {
+            // seguir sin contra-argumento
+          }
+        }
+        if (!counterArgument && groqKey) {
+          try {
+            counterArgument = await callOpenAIStyle({
+              provider: "Groq",
+              url: GROQ_URL,
+              apiKey: groqKey,
+              model: MODELS.groq,
+              system: counterSystem,
+              user: counterUser,
+              max_tokens: 800,
+              temperature: 0.3,
+            });
+          } catch {
+            // seguir sin contra-argumento
+          }
+        }
+
+        if (counterArgument) {
+          const secondJudgeUser =
+            `Pregunta:\n${message}\n\nBorrador original:\n${truncate(draft, 3000)}\n\nContra-argumento:\n${truncate(counterArgument, 2000)}\n\n` +
+            `Considerando ambas posturas, devuelve SOLO un JSON con: decision (APPROVE, REWRITE o NEED_MORE_INFO), final_answer, confidence, caveats, next_steps, risk_flags, audit_summary, missing_info_questions.`;
+          try {
+            const secondJudgeRaw = await callClaudeWithFallback({
+              apiKey: anthropicKey,
+              system: judgeSystem,
+              user: secondJudgeUser,
+              max_tokens: 4096,
+              temperature: 0.1,
+            });
+            const secondJudge = extractJson<JudgePayload>(secondJudgeRaw) || safeJsonParse<JudgePayload>(secondJudgeRaw);
+            if (secondJudge) {
+              decision = (secondJudge.decision ?? decision) as JudgeDecision;
+              if (typeof secondJudge.final_answer === "string") finalAnswer = secondJudge.final_answer;
+              if (typeof secondJudge.confidence === "number") confidence = secondJudge.confidence;
+              if (Array.isArray(secondJudge.missing_info_questions)) {
+                missingInfo.length = 0;
+                missingInfo.push(...secondJudge.missing_info_questions.filter((q) => typeof q === "string").slice(0, 7));
+              }
+              if (Array.isArray(secondJudge.risk_flags)) riskFlags = secondJudge.risk_flags.filter((r) => typeof r === "string");
+              if (Array.isArray(secondJudge.caveats)) caveats = secondJudge.caveats.filter((c) => typeof c === "string");
+              if (Array.isArray(secondJudge.next_steps)) nextSteps = secondJudge.next_steps.filter((s) => typeof s === "string");
+              if (typeof secondJudge.audit_summary === "string") auditSummary = secondJudge.audit_summary;
+            }
+          } catch {
+            // mantener decisión HIGH_AMBIGUITY y respuestas ya obtenidas
+          }
+        }
+      }
+
+      const answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${finalAnswer}`;
+      const payload = {
+        type: "answer" as const,
+        content: DISCLAIMER_PREFIX + answerWithDisclaimer,
+        mode: "max-reliability" as const,
+        decision,
+        answer: answerWithDisclaimer,
+        questions: missingInfo,
+        confidence,
+        caveats,
+        next_steps: nextSteps,
+        risk_flags: riskFlags,
+        audit_summary: auditSummary,
+      };
+      console.log(
+        JSON.stringify({
+          mode: "max-reliability",
+          decision: payload.decision,
+          confidence: payload.confidence,
+          timestamp: new Date().toISOString(),
+        })
+      );
+      return NextResponse.json(payload, { status: 200 });
+    }
 
     // B) Clarificador con Claude
     const ambiguous = needsClarificationHeuristic(message);

@@ -5,7 +5,7 @@ import { useSupabase } from "@/components/providers/SupabaseProvider";
 import { useAuth } from "@/hooks/useAuth";
 
 type ApiResponse =
-  | { type: "answer"; content: string; note?: string }
+  | { type: "answer"; content: string; note?: string; mode?: string; decision?: string; questions?: string[]; confidence?: number; caveats?: string[]; next_steps?: string[]; risk_flags?: string[]; audit_summary?: string }
   | { type: "clarify"; questions: string[] }
   | { type: "reject"; message: string };
 
@@ -28,6 +28,16 @@ export function Chatbot() {
   const [clarifyQuestions, setClarifyQuestions] = useState<string[] | null>(null);
   const [rejectMessage, setRejectMessage] = useState<string | null>(null);
   const [answerNote, setAnswerNote] = useState<string | null>(null);
+  const [maxReliability, setMaxReliability] = useState(false);
+  const [maxReliabilityMeta, setMaxReliabilityMeta] = useState<{
+    decision?: string;
+    confidence?: number;
+    caveats?: string[];
+    next_steps?: string[];
+    risk_flags?: string[];
+    audit_summary?: string;
+    questions?: string[];
+  } | null>(null);
   const bottomRef = useRef<HTMLDivElement>(null);
   const supabase = useSupabase();
   const { user } = useAuth(supabase);
@@ -60,6 +70,7 @@ export function Chatbot() {
     setClarifyQuestions(null);
     setRejectMessage(null);
     setAnswerNote(null);
+    setMaxReliabilityMeta(null);
     setMessages((m) => [...m, { role: "user", content: text }]);
     setInput("");
     setLoading(true);
@@ -72,6 +83,7 @@ export function Chatbot() {
           message: text,
           history: messages.slice(-10),
           userId: user?.id ?? null,
+          ...(maxReliability ? { mode: "max-reliability" } : { mode: "standard" }),
         }),
       });
       const data = (await res.json()) as ApiResponse;
@@ -99,6 +111,19 @@ export function Chatbot() {
 
       if (data.type === "answer" && data.note) {
         setAnswerNote(data.note);
+      }
+      if (data.type === "answer" && data.mode === "max-reliability") {
+        setMaxReliabilityMeta({
+          decision: data.decision,
+          confidence: data.confidence,
+          caveats: data.caveats,
+          next_steps: data.next_steps,
+          risk_flags: data.risk_flags,
+          audit_summary: data.audit_summary,
+          questions: data.questions,
+        });
+      } else {
+        setMaxReliabilityMeta(null);
       }
 
       setMessages((m) => [...m, { role: "assistant", content: data.content }]);
@@ -136,6 +161,18 @@ export function Chatbot() {
           </div>
         )}
 
+        <div className="flex flex-wrap items-center gap-2 border-b border-slate-200 px-4 py-2 dark:border-slate-600">
+          <label className="flex cursor-pointer items-center gap-2 text-sm text-slate-600 dark:text-slate-300">
+            <input
+              type="checkbox"
+              checked={maxReliability}
+              onChange={(e) => setMaxReliability(e.target.checked)}
+              className="h-4 w-4 rounded border-slate-300 text-[#1e40af] focus:ring-[#1e40af] dark:border-slate-500"
+            />
+            <span>Modo Máxima Confiabilidad</span>
+          </label>
+        </div>
+
         <div className="flex min-h-[75vh] flex-col">
           <div
             className="flex-1 space-y-4 overflow-y-auto p-4 scroll-smooth"
@@ -167,25 +204,55 @@ export function Chatbot() {
               </p>
             )}
             {messages.map((msg, i) => (
-              <div
-                key={i}
-                className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
-              >
+              <div key={i} className="space-y-2">
                 <div
-                  className={`max-w-[85%] rounded-2xl px-4 py-3 text-[1rem] ${msg.role === "user"
-                    ? "bg-blue-100 text-blue-900 dark:bg-blue-900/40 dark:text-blue-100"
-                    : "bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200"
-                  }`}
-                  style={{ lineHeight: 1.6 }}
+                  className={`flex ${msg.role === "user" ? "justify-end" : "justify-start"}`}
                 >
-                  {msg.role === "assistant" ? (
-                    <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
-                      {msg.content}
-                    </div>
-                  ) : (
-                    <span className="whitespace-pre-wrap">{msg.content}</span>
-                  )}
+                  <div
+                    className={`max-w-[85%] rounded-2xl px-4 py-3 text-[1rem] ${msg.role === "user"
+                      ? "bg-blue-100 text-blue-900 dark:bg-blue-900/40 dark:text-blue-100"
+                      : "bg-slate-100 text-slate-800 dark:bg-slate-700 dark:text-slate-200"
+                    }`}
+                    style={{ lineHeight: 1.6 }}
+                  >
+                    {msg.role === "assistant" ? (
+                      <div className="prose prose-sm dark:prose-invert max-w-none whitespace-pre-wrap leading-relaxed">
+                        {msg.content}
+                      </div>
+                    ) : (
+                      <span className="whitespace-pre-wrap">{msg.content}</span>
+                    )}
+                  </div>
                 </div>
+                {msg.role === "assistant" && i === messages.length - 1 && maxReliabilityMeta && (
+                  <div className="rounded-xl border border-slate-200 bg-slate-50 px-4 py-3 text-sm dark:border-slate-600 dark:bg-slate-800/60">
+                    {maxReliabilityMeta.decision && (
+                      <p className="font-medium text-slate-700 dark:text-slate-200">Decisión: {maxReliabilityMeta.decision}</p>
+                    )}
+                    {typeof maxReliabilityMeta.confidence === "number" && (
+                      <p className="mt-1 text-slate-600 dark:text-slate-300">Confianza: {(maxReliabilityMeta.confidence * 100).toFixed(0)}%</p>
+                    )}
+                    {maxReliabilityMeta.questions && maxReliabilityMeta.questions.length > 0 && (
+                      <ul className="mt-2 list-disc space-y-1 pl-5 text-slate-600 dark:text-slate-300">
+                        {maxReliabilityMeta.questions.map((q, idx) => (
+                          <li key={idx}>{q}</li>
+                        ))}
+                      </ul>
+                    )}
+                    {maxReliabilityMeta.caveats && maxReliabilityMeta.caveats.length > 0 && (
+                      <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Salvedades:</span> {maxReliabilityMeta.caveats.join(" ")}</p>
+                    )}
+                    {maxReliabilityMeta.next_steps && maxReliabilityMeta.next_steps.length > 0 && (
+                      <p className="mt-2 text-slate-600 dark:text-slate-300"><span className="font-medium">Próximos pasos:</span> {maxReliabilityMeta.next_steps.join(" ")}</p>
+                    )}
+                    {maxReliabilityMeta.risk_flags && maxReliabilityMeta.risk_flags.length > 0 && (
+                      <p className="mt-2 text-amber-700 dark:text-amber-200"><span className="font-medium">Riesgos:</span> {maxReliabilityMeta.risk_flags.join(" ")}</p>
+                    )}
+                    {maxReliabilityMeta.audit_summary && (
+                      <p className="mt-2 border-t border-slate-200 pt-2 text-xs text-slate-500 dark:border-slate-600 dark:text-slate-400">{maxReliabilityMeta.audit_summary}</p>
+                    )}
+                  </div>
+                )}
               </div>
             ))}
             {loading && (
