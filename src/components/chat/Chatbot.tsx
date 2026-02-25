@@ -206,6 +206,19 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
           </div>
         </div>
 
+        {/* Indicador de modo activo */}
+        <div className="border-b border-slate-200 px-4 py-2 dark:border-slate-600">
+          {maxReliability ? (
+            <span className="inline-flex items-center rounded-full bg-green-100 px-3 py-1 text-sm font-medium text-green-800 dark:bg-green-900/30 dark:text-green-200">
+              Revisión jurídica activa
+            </span>
+          ) : (
+            <span className="inline-flex items-center rounded-full bg-gray-100 px-3 py-1 text-sm font-medium text-gray-700 dark:bg-gray-700 dark:text-gray-200">
+              Modo Normal
+            </span>
+          )}
+        </div>
+
         <div className="flex min-h-[75vh] flex-col">
           <div
             className="flex-1 space-y-4 overflow-y-auto p-4 scroll-smooth"
@@ -308,8 +321,8 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
                 value={input}
                 onChange={(e) => setInput(e.target.value)}
                 onKeyDown={(e) => e.key === "Enter" && !e.shiftKey && send()}
-                placeholder="Ej.: ¿Qué es la renuncia laboral en RD?"
-                className="min-h-[60px] flex-1 rounded-xl border border-slate-300 bg-white px-4 py-3 text-[1.1rem] placeholder:text-slate-400 focus:border-[#1e40af] focus:outline-none focus:ring-2 focus:ring-[#1e40af]/20 dark:border-slate-600 dark:bg-slate-800 dark:placeholder:text-slate-500"
+                placeholder="Ej: ¿Pueden despedirme siendo empleado de carrera administrativa?"
+                className="min-h-[64px] flex-1 rounded-2xl border border-slate-200 bg-white px-5 py-4 text-[1.1rem] shadow-lg placeholder:text-slate-400 focus:border-[#1e40af] focus:outline-none focus:ring-2 focus:ring-[#1e40af]/20 dark:border-slate-600 dark:bg-slate-100 dark:text-slate-900 dark:placeholder:text-slate-500"
                 disabled={loading}
                 style={{ lineHeight: 1.6 }}
               />
@@ -317,7 +330,7 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
                 type="button"
                 onClick={send}
                 disabled={loading || !input.trim()}
-                className="flex min-h-[60px] min-w-[60px] items-center justify-center rounded-xl bg-[#1e40af] text-white transition-colors hover:bg-[#1e3a8a] disabled:opacity-50 dark:bg-[#1e40af] dark:hover:bg-[#1e3a8a]"
+                className="flex min-h-[64px] min-w-[64px] items-center justify-center rounded-2xl bg-[#1e3a8a] text-white shadow-lg transition-colors hover:bg-[#1e3a8a]/90 disabled:opacity-50 dark:bg-[#1e3a8a] dark:hover:bg-[#1e3a8a]/90"
               >
                 <SendIcon />
               </button>

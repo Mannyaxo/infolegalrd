@@ -31,24 +31,23 @@ export default function HomePage() {
       </div>
 
       <div className="mx-auto max-w-4xl px-4 py-8">
-        {/* Hero */}
+        {/* Hero profesional */}
         <header className="mb-10 text-center">
           <h1 className="text-4xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-5xl">
-            InfoLegal RD
+            Asistente Legal Informativo para República Dominicana
           </h1>
           <p className="mx-auto mt-3 max-w-2xl text-lg text-slate-600 dark:text-slate-300">
-            Orientación legal informativa basada en la legislación dominicana. Consultas generales,
-            marco normativo y preguntas frecuentes — siempre con carácter educativo.
+            Consulta normativa dominicana con análisis asistido por inteligencia artificial.
           </p>
           <div className="mt-6 flex flex-wrap justify-center gap-3">
             <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              <span className="text-emerald-500">✓</span> Basado en legislación dominicana
+              ✔ Información legal educativa
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              <span className="text-emerald-500">✓</span> Análisis estructurado por IA
+              ✔ Basado en legislación dominicana
             </span>
             <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              <span className="text-emerald-500">✓</span> Información educativa, no asesoría legal
+              ✔ No sustituye asesoría profesional
             </span>
           </div>
         </header>
@@ -102,6 +101,33 @@ export default function HomePage() {
           </div>
         </section>
 
+        {/* Tarjetas de confianza */}
+        <section className="mb-6">
+          <div className="grid gap-4 md:grid-cols-3">
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
+              <div className="mb-2 text-2xl">🛡️</div>
+              <h3 className="font-medium text-slate-900 dark:text-white">Protección Legal</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Explicaciones claras sobre tus derechos.
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
+              <div className="mb-2 text-2xl">⚖️</div>
+              <h3 className="font-medium text-slate-900 dark:text-white">Normativa Dominicana</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Basado en Constitución y leyes vigentes.
+              </p>
+            </div>
+            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
+              <div className="mb-2 text-2xl">🤖</div>
+              <h3 className="font-medium text-slate-900 dark:text-white">IA Revisada</h3>
+              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
+                Modo Máxima Confiabilidad disponible.
+              </p>
+            </div>
+          </div>
+        </section>
+
         {/* Chat */}
         <Chatbot
           suggestedQuery={suggestedQuery ?? undefined}
@@ -109,12 +135,12 @@ export default function HomePage() {
         />
       </div>
 
-      {/* Footer institucional */}
+      {/* Footer de confianza legal */}
       <footer className="mt-12 border-t border-slate-200 bg-white py-8 dark:border-slate-700 dark:bg-slate-800/50">
         <div className="mx-auto max-w-4xl px-4">
-          <p className="text-center text-sm text-slate-600 dark:text-slate-400">
-            Esta herramienta ofrece información general educativa. No constituye asesoramiento legal
-            vinculante ni sustituye la consulta con un abogado colegiado.
+          <p className="text-center text-xs text-slate-500 dark:text-slate-400">
+            InfoLegal RD ofrece orientación educativa basada en normativa dominicana. No constituye
+            asesoría legal ni relación abogado-cliente.
           </p>
           <nav className="mt-4 flex justify-center gap-6 text-sm">
             <Link
