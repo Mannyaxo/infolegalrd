@@ -1,4 +1,5 @@
 import { NextRequest, NextResponse } from "next/server";
+import { DISCLAIMER_PREFIX } from "@/lib/chat-guardrails";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -6,9 +7,6 @@ type RejectResponse = { type: "reject"; message: string };
 type ClarifyResponse = { type: "clarify"; questions: string[] };
 type AnswerResponse = { type: "answer"; content: string; note?: string };
 type ChatResponse = RejectResponse | ClarifyResponse | AnswerResponse;
-
-const REJECT_MESSAGE =
-  "Esta herramienta solo ofrece información general y educativa. Por favor, reformule la consulta de forma hipotética o consulte a un abogado colegiado.";
 
 const ADVERTENCIA_FINAL_EXACTA =
   "Este análisis es orientativo y se basa únicamente en la información proporcionada de forma genérica. No constituye asesoramiento legal vinculante, no crea relación abogado-cliente y no sustituye la consulta con un abogado colegiado. Se recomienda encarecidamente acudir a un profesional habilitado para evaluar su caso concreto.";
@@ -50,41 +48,6 @@ function normalizeText(s: string): string {
 function truncate(s: string, max = 2500): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…`;
-}
-
-function looksLikePII(text: string): boolean {
-  const t = text;
-  const email = /\b[A-Z0-9._%+-]+@[A-Z0-9.-]+\.[A-Z]{2,}\b/i;
-  const phone = /\b(\+?\d{1,3}[\s-]?)?(\(?\d{2,4}\)?[\s-]?)?\d{3,4}[\s-]?\d{4}\b/;
-  const cedula = /\b\d{3}-\d{7}-\d\b|\b\d{11}\b/;
-  const addressHints =
-    /\b(calle|av\.?|avenida|sector|residencial|apto|apartamento|edificio|km|kil[oó]metro|no\.?|número|dirección)\b/i;
-  const exactDate = /\b\d{1,2}[\/-]\d{1,2}[\/-]\d{2,4}\b/;
-  return email.test(t) || phone.test(t) || cedula.test(t) || addressHints.test(t) || exactDate.test(t);
-}
-
-function asksPersonalAdvice(text: string): boolean {
-  const t = text.toLowerCase();
-  const triggers = [
-    "en mi caso",
-    "para mi caso",
-    "qué hago",
-    "que hago",
-    "qué debo hacer",
-    "que debo hacer",
-    "me conviene",
-    "qué me recomiendas",
-    "que me recomiendas",
-    "mi situación",
-    "mi situacion",
-    "ayúdame con mi caso",
-    "ayudame con mi caso",
-  ];
-  return triggers.some((x) => t.includes(x));
-}
-
-function shouldReject(userMessage: string): boolean {
-  return looksLikePII(userMessage) || asksPersonalAdvice(userMessage);
 }
 
 function needsClarificationHeuristic(userMessage: string): boolean {
@@ -348,12 +311,10 @@ export async function POST(request: NextRequest) {
     const history = Array.isArray(body.history) ? body.history : [];
 
     if (!message) {
-      return NextResponse.json({ type: "reject", message: REJECT_MESSAGE } satisfies ChatResponse, { status: 400 });
-    }
-
-    // A) Triage / rechazo ético (siempre primero)
-    if (shouldReject(message)) {
-      return NextResponse.json({ type: "reject", message: REJECT_MESSAGE } satisfies ChatResponse, { status: 200 });
+      return NextResponse.json(
+        { type: "reject", message: "El mensaje no puede estar vacío." } satisfies ChatResponse,
+        { status: 400 }
+      );
     }
 
     const anthropicKey = process.env.ANTHROPIC_API_KEY;
@@ -666,6 +627,8 @@ export async function POST(request: NextRequest) {
     if (note) {
       final = `${note}\n\n${final}`;
     }
+
+    final = DISCLAIMER_PREFIX + final;
 
     console.log("Resumen final: Total agentes contribuyentes: " + successCount + "/5");
     return NextResponse.json({ type: "answer", content: final, note } satisfies ChatResponse, { status: 200 });
