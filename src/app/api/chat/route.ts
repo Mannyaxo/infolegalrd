@@ -1,6 +1,13 @@
 import { NextRequest, NextResponse } from "next/server";
 import { DISCLAIMER_PREFIX } from "@/lib/chat-guardrails";
-import { retrieveVigenteChunks, formatVigenteContext } from "@/lib/rag/vigente";
+import {
+  embedQuery,
+  retrieveVigenteChunks,
+  retrieveVigenteChunksWithEmbedding,
+  formatVigenteContext,
+  formatMaxReliabilityContext,
+  type VigenteChunk,
+} from "@/lib/rag/vigente";
 import { getSupabaseServer } from "@/lib/supabase/server";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
@@ -28,8 +35,8 @@ CRÍTICO: NUNCA inventes o resumas el contenido de un artículo de ley por tu cu
 const XAI_URL = "https://api.x.ai/v1/chat/completions";
 const OPENAI_URL = "https://api.openai.com/v1/chat/completions";
 const GROQ_URL = "https://api.groq.com/openai/v1/chat/completions";
-const GEMINI_PRIMARY_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-3-flash:generateContent";
-const GEMINI_FALLBACK_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-lite:generateContent";
+const GEMINI_PRIMARY_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-2.0-flash:generateContent";
+const GEMINI_FALLBACK_URL = "https://generativelanguage.googleapis.com/v1beta/models/gemini-1.5-flash:generateContent";
 const ANTHROPIC_URL = "https://api.anthropic.com/v1/messages";
 
 const MODELS = {
@@ -40,8 +47,8 @@ const MODELS = {
   groq: "llama-3.3-70b-versatile",
   claude_primary: "claude-sonnet-4-5",
   claude_fallback: "claude-haiku-4-5-20251001",
-  gemini_primary: "gemini-3-flash",
-  gemini_fallback: "gemini-2.5-flash-lite",
+  gemini_primary: "gemini-2.0-flash",
+  gemini_fallback: "gemini-1.5-flash",
 } as const;
 
 function normalizeText(s: string): string {
@@ -165,18 +172,23 @@ async function callGemini(params: {
   url: string;
   apiKey: string;
   user: string;
+  system?: string;
   temperature?: number;
   maxOutputTokens?: number;
 }): Promise<string> {
-  const { provider, modelLabel, url, apiKey, user, temperature = 0.2, maxOutputTokens = 1800 } = params;
+  const { provider, modelLabel, url, apiKey, user, system, temperature = 0.2, maxOutputTokens = 1800 } = params;
   console.log(`[API ${provider}] Intentando model: ${modelLabel}`);
+  const body: { contents: unknown[]; generationConfig: { temperature: number; maxOutputTokens: number }; systemInstruction?: { parts: Array<{ text: string }> } } = {
+    contents: [{ role: "user", parts: [{ text: user }] }],
+    generationConfig: { temperature, maxOutputTokens },
+  };
+  if (system && system.trim()) {
+    body.systemInstruction = { parts: [{ text: system.trim() }] };
+  }
   const res = await fetch(`${url}?key=${encodeURIComponent(apiKey)}`, {
     method: "POST",
     headers: { "Content-Type": "application/json" },
-    body: JSON.stringify({
-      contents: [{ role: "user", parts: [{ text: user }] }],
-      generationConfig: { temperature, maxOutputTokens },
-    }),
+    body: JSON.stringify(body),
   });
 
   const parsed = await fetchJsonOrText(res);
@@ -217,27 +229,30 @@ async function callGemini(params: {
 async function callGeminiWithFallback(params: {
   apiKey: string;
   user: string;
+  system?: string;
   temperature?: number;
   maxOutputTokens?: number;
 }): Promise<string> {
   try {
     return await callGemini({
-      provider: "Gemini-3-Flash",
-      modelLabel: "gemini-3-flash",
+      provider: "Gemini-2.0-Flash",
+      modelLabel: "gemini-2.0-flash",
       url: GEMINI_PRIMARY_URL,
       apiKey: params.apiKey,
       user: params.user,
+      system: params.system,
       temperature: params.temperature,
       maxOutputTokens: params.maxOutputTokens,
     });
   } catch (error) {
-    console.warn("Gemini 3 Flash falló o llegó al límite, intentando con 2.5 Lite...");
+    console.warn("Gemini 2.0 Flash falló, intentando con 1.5 Flash...");
     return await callGemini({
-      provider: "Gemini-2.5-Lite",
-      modelLabel: "gemini-2.5-flash-lite",
+      provider: "Gemini-1.5-Flash",
+      modelLabel: "gemini-1.5-flash",
       url: GEMINI_FALLBACK_URL,
       apiKey: params.apiKey,
       user: params.user,
+      system: params.system,
       temperature: params.temperature,
       maxOutputTokens: params.maxOutputTokens,
     });
@@ -341,20 +356,52 @@ function extractJson<T>(raw: string): T | null {
   return safeJsonParse<T>(toParse);
 }
 
-type JudgeDecision = "APPROVE" | "REWRITE" | "NEED_MORE_INFO" | "HIGH_AMBIGUITY";
-type JudgePayload = {
-  decision?: JudgeDecision;
-  missing_info_questions?: string[];
-  risk_flags?: string[];
-  final_answer?: string;
-  confidence?: number;
-  caveats?: string[];
-  next_steps?: string[];
-  audit_summary?: string;
-};
-
 const MAX_RELIABILITY_DISCLAIMER =
   "Modo experimental de máxima confiabilidad. Respuesta revisada por juez, pero sigue siendo información general, no asesoría legal.";
+
+/** topK para RAG en modo max-reliability (configurable). */
+const MAX_RELIABILITY_TOP_K = 6;
+
+type MaxReliabilityCitation = {
+  instrument: string;
+  type: string;
+  number: string | null;
+  published_date: string;
+  status: string;
+  source_url: string;
+  chunk_index: number;
+};
+
+type MaxReliabilityPayload = {
+  decision: "APPROVE" | "NEED_MORE_INFO" | "NO_EVIDENCE" | "UNVERIFIED_CITATION";
+  confidence: number;
+  answer: string;
+  missing_info_questions?: string[];
+  caveats?: string[];
+  next_steps?: string[];
+  citations?: MaxReliabilityCitation[];
+};
+
+/** Extrae menciones de artículos (Art. N, Artículo N) para post-check. */
+function extractArticleMentions(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ");
+  const artDot = Array.from(normalized.matchAll(/(?:art\.?\s*\d+(?:-\d+)?)/gi), (m) => m[0].replace(/\s+/g, " ").toLowerCase());
+  const articulo = Array.from(normalized.matchAll(/(?:artículo\s*\d+(?:-\d+)?)/gi), (m) => m[0].replace(/\s+/g, " ").toLowerCase());
+  const seen = new Set<string>();
+  for (let i = 0; i < artDot.length; i++) if (artDot[i]) seen.add(artDot[i]);
+  for (let i = 0; i < articulo.length; i++) if (articulo[i]) seen.add(articulo[i]);
+  return Array.from(seen);
+}
+
+/** Verifica que cada mención de artículo aparezca literalmente en el texto de los chunks (case-insensitive). */
+function allArticleMentionsInText(mentions: string[], chunkText: string): boolean {
+  const lower = chunkText.toLowerCase();
+  for (const m of mentions) {
+    if (!m) continue;
+    if (!lower.includes(m.toLowerCase())) return false;
+  }
+  return true;
+}
 
 export async function POST(request: NextRequest) {
   try {
@@ -400,250 +447,243 @@ export async function POST(request: NextRequest) {
       // RAG no disponible o sin embeddings
     }
     const ragBlock = ragContext.text
-      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nCada fragmento tiene: title, type, number, published_date, status, source_url. Responde basándote en este contexto; incluye Confidence (0-1), Caveats, Next steps y Citations (lista de {title, source_url, published_date, status}). No inventes artículos.`
+      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks recuperados o en la metadata explícita proporcionada (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". Si mencionas published_date, effective_date, source_url o gazette_ref, cita que provienen de los metadatos del sistema. Responde basándote solo en este contexto; incluye Confidence (0-1), Caveats, Next steps y Citations. No inventes artículos.`
       : "";
 
-    // ————— Modo Máxima Confiabilidad (experimental) —————
+    // ————— Modo Máxima Confiabilidad (anti-alucinación) —————
     if (mode === "max-reliability") {
-      const advocateSystem =
+      const supabase = getSupabaseServer();
+      let retrievedChunks: VigenteChunk[] = [];
+      try {
+        const embedding = await embedQuery(message);
+        if (supabase && embedding.length > 0) {
+          retrievedChunks = await retrieveVigenteChunksWithEmbedding(supabase, embedding, MAX_RELIABILITY_TOP_K);
+        }
+      } catch {
+        // RAG no disponible
+      }
+
+      // CAPA 1: Sin chunks — orientar sin bloquear; no conclusiones legales ni citas
+      if (retrievedChunks.length === 0) {
+        const noEvidencePayload = {
+          ok: true as const,
+          mode: "max-reliability" as const,
+          decision: "NO_EVIDENCE" as const,
+          confidence: 0.95,
+          answer:
+            "No se encontró evidencia en la base de instrumentos vigentes cargada para responder con citas verificables.\n\n**Orientación general:** Puedes localizar la norma aplicable identificando el tipo de texto (ley, reglamento, Constitución), la entidad que lo emite (Congreso, Poder Ejecutivo, órgano regulador) y el año de publicación. Consulta la Gaceta Oficial o el portal del organismo correspondiente. No cito artículos ni leyes concretas porque no hay evidencia recuperada en esta sesión.",
+          missing_info_questions: [
+            "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
+            "¿Sabe el nombre o número de la ley o el año de publicación?",
+            "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
+          ],
+          next_steps: [
+            "Identifique el documento o ley que podría aplicar (nombre, número, año).",
+            "Busque el texto vigente en la fuente oficial (ej. gacetaoficial.gob.do, página del organismo).",
+            "Ingeste aquí la versión vigente del instrumento (texto completo) para poder citarla.",
+            "Vuelva a formular la consulta una vez cargada la fuente.",
+          ],
+          caveats: ["No se citan artículos ni leyes específicas porque no hay evidencia recuperada."],
+          citations: [] as MaxReliabilityCitation[],
+          questions: [
+            "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
+            "¿Sabe el nombre o número de la ley o el año de publicación?",
+            "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
+          ],
+        };
+        try {
+          if (supabase) {
+            await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
+              user_id: body.userId ?? null,
+              mode: "max-reliability",
+              query: message,
+              decision: "NO_EVIDENCE",
+              confidence: 0.95,
+              citations: [],
+              model_used: { reason: "no_chunks" },
+              tokens_in: null,
+              tokens_out: null,
+            });
+          }
+        } catch {
+          // no bloquear
+        }
+        return NextResponse.json(noEvidencePayload, { status: 200 });
+      }
+
+      const { contextText, allChunkText } = formatMaxReliabilityContext(retrievedChunks, 12000);
+      const allowedSourceUrls = new Set(retrievedChunks.map((c) => (c.citation.source_url ?? "").trim()).filter(Boolean));
+
+      // CAPA 2: Prompt restrictivo — salida JSON estricta
+      const maxReliabilitySystem =
         `${DISCLAIMER_HARD_RULES}\n` +
-        `Genera un borrador inicial (draft) de respuesta informativa sobre derecho en República Dominicana. Sé estructurado y prudente. No des asesoría personalizada. El borrador NO es la respuesta final; será revisado por un juez.`;
-      const advocateUser =
-        `Consulta (general):\n${message}\n\n` +
+        `Modo MÁXIMA CONFIABILIDAD. Reglas estrictas:\n` +
+        `- SOLO puedes usar información presente en el CONTEXTO proporcionado.\n` +
+        `- Está PROHIBIDO inventar números de artículos, nombres de leyes, fechas o citas.\n` +
+        `- Si el número de artículo NO aparece literalmente en el contexto, NO lo menciones.\n` +
+        `- Cada afirmación jurídica relevante debe tener al menos una cita del contexto.\n` +
+        `- Si la evidencia es insuficiente o ambigua, devuelve NEED_MORE_INFO y preguntas concretas en missing_info_questions.\n` +
+        `Tu salida DEBE ser ÚNICAMENTE un JSON válido, sin texto antes ni después. Schema exacto:\n` +
+        `{\n` +
+        `  "decision": "APPROVE" | "NEED_MORE_INFO" | "NO_EVIDENCE",\n` +
+        `  "confidence": number (0-1),\n` +
+        `  "answer": string,\n` +
+        `  "missing_info_questions": string[],\n` +
+        `  "caveats": string[],\n` +
+        `  "next_steps": string[],\n` +
+        `  "citations": [{"instrument": string, "type": string, "number": string|null, "published_date": string, "status": string, "source_url": string, "chunk_index": number}]\n` +
+        `}\n` +
+        `Las citations SOLO pueden ser de los chunks del contexto (mismo instrument/title, source_url y chunk_index que aparecen en el contexto).`;
+
+      const maxReliabilityUser =
+        `Consulta del usuario:\n${message}\n\n` +
         (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-        ragBlock +
-        `\n\nRedacta un borrador informativo y general.`;
+        `CONTEXTO (instrumentos vigentes — solo puedes citar esto):\n${contextText}\n\n` +
+        `Responde ÚNICAMENTE con el JSON del schema anterior.`;
 
-      let draft: string;
+      const MAX_RELIABILITY_AGENT_TIMEOUT_MS = 8000;
+      let modelRaw: string;
       try {
-        draft = await callClaudeWithFallback({
-          apiKey: anthropicKey,
-          system: advocateSystem,
-          user: advocateUser,
-          max_tokens: 4096,
-          temperature: 0.2,
-        });
+        modelRaw = await Promise.race([
+          callClaudeWithFallback({
+            apiKey: anthropicKey,
+            system: maxReliabilitySystem,
+            user: maxReliabilityUser,
+            max_tokens: 4096,
+            temperature: 0.1,
+          }),
+          new Promise<string>((_, rej) =>
+            setTimeout(() => rej(new Error(`Timeout ${MAX_RELIABILITY_AGENT_TIMEOUT_MS}ms`)), MAX_RELIABILITY_AGENT_TIMEOUT_MS)
+          ),
+        ]);
       } catch (e) {
-        console.error("[max-reliability] Advocate falló:", e instanceof Error ? e.message : String(e));
-        return NextResponse.json(
-          { type: "reject", message: "No se pudo generar el borrador en modo máxima confiabilidad." } satisfies ChatResponse,
-          { status: 503 }
-        );
+        console.error("[max-reliability] Modelo falló:", e instanceof Error ? e.message : String(e));
+        const fallbackPayload = {
+          ok: true as const,
+          mode: "max-reliability" as const,
+          decision: "NO_EVIDENCE" as const,
+          confidence: 0.85,
+          answer: "No se pudo generar una respuesta verificable. El modelo no respondió correctamente.",
+          citations: [] as MaxReliabilityCitation[],
+          caveats: ["Error al invocar el modelo; no se emitió criterio."],
+          next_steps: ["Vuelve a intentar en unos momentos."],
+        };
+        try {
+          if (supabase) {
+            await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
+              user_id: body.userId ?? null,
+              mode: "max-reliability",
+              query: message,
+              decision: "NO_EVIDENCE",
+              confidence: 0.85,
+              citations: [],
+              model_used: { error: "model_failed" },
+              tokens_in: null,
+              tokens_out: null,
+            });
+          }
+        } catch {
+          // no bloquear
+        }
+        return NextResponse.json(fallbackPayload, { status: 200 });
       }
 
-      const judgeSystem =
-        `Eres un juez estricto que revisa borradores de respuestas jurídicas informativas (República Dominicana). Tu salida DEBE ser ÚNICAMENTE un JSON válido, sin texto antes ni después.
-Schema exacto:
-{
-  "decision": "APPROVE" | "REWRITE" | "NEED_MORE_INFO" | "HIGH_AMBIGUITY",
-  "missing_info_questions": ["pregunta1", "pregunta2", ...],
-  "risk_flags": ["riesgo1", ...],
-  "final_answer": "texto de la respuesta final para el usuario",
-  "confidence": número entre 0 y 1,
-  "caveats": ["salvedad1", ...],
-  "next_steps": ["paso1", ...],
-  "audit_summary": "resumen breve del proceso de revisión"
-}
-Reglas:
-- Si faltan hechos esenciales para dar una respuesta segura → decision = "NEED_MORE_INFO". En ese caso final_answer DEBE contener SOLO: (1) Un párrafo explicativo breve (máximo 6 líneas), (2) Exactamente 5 preguntas (las más críticas para el caso), (3) Un aviso corto sobre plazos/deadlines sin dar números exactos salvo que se conozca fecha de notificación y foro. NO incluyas en final_answer listas largas de riesgos ni salvedades (esas van en risk_flags/caveats para uso interno).
-- Si confidence < 0.65 → forzar decision = "NEED_MORE_INFO".
-- Si hay contradicción, ambigüedad alta o dos interpretaciones razonables → decision = "HIGH_AMBIGUITY".
-- APPROVE solo si la respuesta es sólida y verificable; REWRITE si el juez puede mejorar el texto y lo hace en final_answer.`;
-
-      let judgeUser =
-        `Pregunta del usuario:\n${message}\n\n` +
-        (historyText ? `Contexto:\n${historyText}\n\n` : "") +
-        (ragContext.text ? `Contexto oficial disponible (verifica citas contra este texto):\n${truncate(ragContext.text, 4000)}\n\n` : "") +
-        `Borrador a revisar:\n${truncate(draft, 6000)}\n\n` +
-        `Devuelve SOLO el JSON con decision, missing_info_questions, risk_flags, final_answer, confidence, caveats, next_steps, audit_summary.`;
-
-      let judgeRaw: string;
-      try {
-        judgeRaw = await callClaudeWithFallback({
-          apiKey: anthropicKey,
-          system: judgeSystem,
-          user: judgeUser,
-          max_tokens: 4096,
-          temperature: 0.1,
-        });
-      } catch (e) {
-        console.error("[max-reliability] Judge falló:", e instanceof Error ? e.message : String(e));
-        return NextResponse.json(
-          { type: "reject", message: "No se pudo completar la revisión en modo máxima confiabilidad." } satisfies ChatResponse,
-          { status: 503 }
-        );
+      let parsed = extractJson<MaxReliabilityPayload>(modelRaw) ?? safeJsonParse<MaxReliabilityPayload>(modelRaw);
+      if (!parsed || typeof parsed !== "object") {
+        parsed = {
+          decision: "NO_EVIDENCE",
+          confidence: 0.85,
+          answer: "La respuesta del modelo no fue JSON válido. No se emite criterio para evitar errores.",
+          missing_info_questions: [],
+          caveats: ["Salida del modelo inválida; no se usó."],
+          next_steps: ["Reformula la consulta o intenta de nuevo."],
+          citations: [],
+        };
       }
 
-      let judge = extractJson<JudgePayload>(judgeRaw);
-      if (!judge) judge = safeJsonParse<JudgePayload>(judgeRaw) || {};
-
-      let decision = (judge.decision ?? "REWRITE") as JudgeDecision;
-      let finalAnswer = typeof judge.final_answer === "string" ? judge.final_answer : draft;
-      let confidence = typeof judge.confidence === "number" ? judge.confidence : 0.5;
-      let missingInfo = Array.isArray(judge.missing_info_questions)
-        ? judge.missing_info_questions.filter((q) => typeof q === "string")
+      let decision = parsed.decision === "APPROVE" || parsed.decision === "NEED_MORE_INFO" || parsed.decision === "NO_EVIDENCE" || parsed.decision === "UNVERIFIED_CITATION"
+        ? parsed.decision
+        : "NO_EVIDENCE";
+      let confidence = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
+      let answer = typeof parsed.answer === "string" ? parsed.answer : "";
+      let missingInfo = Array.isArray(parsed.missing_info_questions) ? parsed.missing_info_questions.filter((q) => typeof q === "string") : [];
+      let caveats = Array.isArray(parsed.caveats) ? parsed.caveats.filter((c) => typeof c === "string") : [];
+      let nextSteps = Array.isArray(parsed.next_steps) ? parsed.next_steps.filter((s) => typeof s === "string") : [];
+      let citations: MaxReliabilityCitation[] = Array.isArray(parsed.citations)
+        ? (parsed.citations as unknown[]).filter(
+            (c): c is MaxReliabilityCitation =>
+              typeof c === "object" &&
+              c !== null &&
+              "instrument" in c &&
+              "source_url" in c &&
+              "chunk_index" in c
+          )
         : [];
-      let riskFlags = Array.isArray(judge.risk_flags) ? judge.risk_flags.filter((r) => typeof r === "string") : [];
-      let caveats = Array.isArray(judge.caveats) ? judge.caveats.filter((c) => typeof c === "string") : [];
-      let nextSteps = Array.isArray(judge.next_steps) ? judge.next_steps.filter((s) => typeof s === "string") : [];
-      let auditSummary = typeof judge.audit_summary === "string" ? judge.audit_summary : "";
 
-      if (confidence < 0.65 && decision !== "NEED_MORE_INFO") {
-        decision = "NEED_MORE_INFO";
-        if (missingInfo.length === 0) {
-          missingInfo.push("¿Puede precisar los hechos principales de su escenario?");
-          missingInfo.push("¿Hay plazos o fechas relevantes?");
-          missingInfo.push("¿Existe documentación (contrato, notificación) que deba considerarse?");
-        }
+      // Citations reales: solo source_url presentes en chunks
+      citations = citations.filter((c) => allowedSourceUrls.has((c.source_url ?? "").trim()));
+
+      // CAPA 3: Post-check — artículos mencionados deben aparecer literalmente en chunks (PROHIBIDO citar números no presentes)
+      const articleMentions = extractArticleMentions(answer);
+      if (articleMentions.length > 0 && !allArticleMentionsInText(articleMentions, allChunkText)) {
+        decision = "UNVERIFIED_CITATION";
+        confidence = 0.6;
+        answer =
+          "No pude verificar esos artículos en las fuentes cargadas. Para evitar errores, no los afirmaré.";
+        missingInfo = [
+          "¿Puede indicar en qué documento o ley concreta aparece el artículo que busca?",
+          "¿Ha ingerido aquí el texto vigente completo de esa norma?",
+        ];
+        nextSteps = [
+          "Verifique el número de artículo en el texto oficial (Gaceta o portal de la entidad).",
+          "Ingeste la versión vigente del instrumento si aún no está cargada.",
+          "Reformule la consulta limitándose a lo que sí está en las fuentes cargadas.",
+        ];
+        caveats = [
+          "Se detectaron menciones de artículos no presentes en el contexto RAG; no se publican.",
+          "En modo máxima confiabilidad está prohibido citar números no presentes en los chunks.",
+        ];
+        // citations: solo las reales (se mantienen las ya filtradas por allowedSourceUrls)
       }
 
-      // NEED_MORE_INFO: exactly 5 questions for UX; user-visible answer = paragraph + questions + short deadline warning only
-      if (decision === "NEED_MORE_INFO") {
-        const fiveQuestions = missingInfo.slice(0, 5);
-        while (fiveQuestions.length < 5) {
-          fiveQuestions.push("¿Hay algún otro hecho relevante que debamos considerar?");
-        }
-        missingInfo = fiveQuestions;
-        const deadlineWarning =
-          "Tenga en cuenta que en materia legal suelen existir plazos; consulte con un abogado para conocer los que apliquen a su situación una vez tenga la información concreta.";
-        const paragraphMatch = finalAnswer.split(/\n\n+/)[0];
-        const shortParagraph = paragraphMatch ? paragraphMatch.replace(/\n/g, " ").trim().slice(0, 600) : "Para orientarle con más precisión necesitamos aclarar algunos puntos.";
-        finalAnswer =
-          shortParagraph +
-          "\n\n**Preguntas esenciales:**\n" +
-          fiveQuestions.map((q, i) => `${i + 1}. ${q}`).join("\n") +
-          "\n\n" +
-          deadlineWarning;
-      }
+      const finalCitationsForLog = citations.map((c) => ({
+        title: c.instrument,
+        source_url: c.source_url,
+        published_date: c.published_date,
+        status: c.status,
+      }));
 
-      // Paso C: HIGH_AMBIGUITY → contra-argumento y segundo juicio
-      if (decision === "HIGH_AMBIGUITY") {
-        const counterSystem =
-          `${DISCLAIMER_HARD_RULES}\n` +
-          `Genera un contra-argumento o perspectiva alternativa al siguiente borrador jurídico. Objetivo: que un juez pueda contrastar ambas visiones. No des asesoría personalizada.`;
-        const counterUser = `Consulta: ${message}\n\nBorrador actual:\n${truncate(draft, 4000)}\n\nRedacta el contra-argumento o interpretación alternativa (máximo 1.500 caracteres).`;
-
-        let counterArgument = "";
-        if (geminiKey) {
-          try {
-            counterArgument = await callGeminiWithFallback({
-              apiKey: geminiKey,
-              user: `${counterSystem}\n\n${counterUser}`,
-              temperature: 0.3,
-              maxOutputTokens: 800,
-            });
-          } catch {
-            // seguir sin contra-argumento
-          }
-        }
-        if (!counterArgument && openaiKey) {
-          try {
-            counterArgument = await callOpenAIStyle({
-              provider: "OpenAI",
-              url: OPENAI_URL,
-              apiKey: openaiKey,
-              model: MODELS.openai_primary,
-              system: counterSystem,
-              user: counterUser,
-              max_tokens: 800,
-              temperature: 0.3,
-            });
-          } catch {
-            // seguir sin contra-argumento
-          }
-        }
-        if (!counterArgument && groqKey) {
-          try {
-            counterArgument = await callOpenAIStyle({
-              provider: "Groq",
-              url: GROQ_URL,
-              apiKey: groqKey,
-              model: MODELS.groq,
-              system: counterSystem,
-              user: counterUser,
-              max_tokens: 800,
-              temperature: 0.3,
-            });
-          } catch {
-            // seguir sin contra-argumento
-          }
-        }
-
-        if (counterArgument) {
-          const secondJudgeUser =
-            `Pregunta:\n${message}\n\nBorrador original:\n${truncate(draft, 3000)}\n\nContra-argumento:\n${truncate(counterArgument, 2000)}\n\n` +
-            `Considerando ambas posturas, devuelve SOLO un JSON con: decision (APPROVE, REWRITE o NEED_MORE_INFO), final_answer, confidence, caveats, next_steps, risk_flags, audit_summary, missing_info_questions.`;
-          try {
-            const secondJudgeRaw = await callClaudeWithFallback({
-              apiKey: anthropicKey,
-              system: judgeSystem,
-              user: secondJudgeUser,
-              max_tokens: 4096,
-              temperature: 0.1,
-            });
-            const secondJudge = extractJson<JudgePayload>(secondJudgeRaw) || safeJsonParse<JudgePayload>(secondJudgeRaw);
-            if (secondJudge) {
-              decision = (secondJudge.decision ?? decision) as JudgeDecision;
-              if (typeof secondJudge.final_answer === "string") finalAnswer = secondJudge.final_answer;
-              if (typeof secondJudge.confidence === "number") confidence = secondJudge.confidence;
-              if (Array.isArray(secondJudge.missing_info_questions)) {
-                missingInfo.length = 0;
-                missingInfo.push(...secondJudge.missing_info_questions.filter((q) => typeof q === "string").slice(0, 7));
-              }
-              if (Array.isArray(secondJudge.risk_flags)) riskFlags = secondJudge.risk_flags.filter((r) => typeof r === "string");
-              if (Array.isArray(secondJudge.caveats)) caveats = secondJudge.caveats.filter((c) => typeof c === "string");
-              if (Array.isArray(secondJudge.next_steps)) nextSteps = secondJudge.next_steps.filter((s) => typeof s === "string");
-              if (typeof secondJudge.audit_summary === "string") auditSummary = secondJudge.audit_summary;
-            }
-          } catch {
-            // mantener decisión HIGH_AMBIGUITY y respuestas ya obtenidas
-          }
-        }
-      }
-
-      let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${finalAnswer}`;
-      if (decision !== "NEED_MORE_INFO" && ragContext.citations.length > 0) {
-        const fuentesLines = ragContext.citations.map(
+      let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
+      if (decision !== "NEED_MORE_INFO" && finalCitationsForLog.length > 0) {
+        const fuentesLines = finalCitationsForLog.map(
           (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
         );
         answerWithDisclaimer += `\n\n---\n**Fuentes (Citations):**\n${fuentesLines.join("\n")}`;
       }
+
       const payload = {
         type: "answer" as const,
         content: DISCLAIMER_PREFIX + answerWithDisclaimer,
         mode: "max-reliability" as const,
+        ok: true as const,
         decision,
         answer: answerWithDisclaimer,
         questions: missingInfo,
         confidence,
         caveats,
         next_steps: nextSteps,
-        risk_flags: riskFlags,
+        citations: finalCitationsForLog,
       };
-      console.log(
-        JSON.stringify({
-          mode: "max-reliability",
-          decision: payload.decision,
-          confidence: payload.confidence,
-          timestamp: new Date().toISOString(),
-          audit_summary: auditSummary,
-        })
-      );
+
       try {
-        const supabase = getSupabaseServer();
         if (supabase) {
-          await (supabase as any).from("legal_audit_log").insert({
+          await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
             user_id: body.userId ?? null,
             mode: "max-reliability",
             query: message,
             decision: payload.decision,
             confidence: payload.confidence,
-            citations: ragContext.citations.map((c) => ({
-              title: c.title,
-              source_url: c.source_url,
-              published_date: c.published_date,
-              status: c.status,
-            })),
+            citations: finalCitationsForLog,
             model_used: { judge: "claude" },
             tokens_in: null,
             tokens_out: null,

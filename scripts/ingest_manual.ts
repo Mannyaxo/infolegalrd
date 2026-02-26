@@ -1,12 +1,19 @@
+import "dotenv/config";
+import dotenv from "dotenv";
+import { resolve } from "path";
+dotenv.config({ path: resolve(process.cwd(), ".env.local") });
+
 /**
  * Ingesta manual controlada para corpus legal (RAG).
- * Uso: npx tsx scripts/ingest_manual.ts --type constitucion --canonical CONSTITUCION-RD --title "Constitución RD" --published 2010-01-26 --status VIGENTE --source_url "https://..." --file "./docs/constitucion.txt"
- *
  * Env: SUPABASE_URL (o NEXT_PUBLIC_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
+ *
+ * published_date = fecha de promulgación del instrumento (ej. Constitución RD: 2010-01-26).
+ * --effective opcional = effective_date (ej. texto consolidado reforma 2024: 2024-??-??).
+ * title puede incluir "(texto consolidado 2024)".
+ *
+ * Ejemplo Constitución RD (2010 + reforma 2024):
+ * npm run ingest:manual -- --type constitucion --canonical CONSTITUCION-RD --title "Constitución de la República Dominicana (texto consolidado 2024)" --published 2010-01-26 --effective 2024-01-01 --status VIGENTE --source_url "https://www.consultoria.gov.do/" --file "./documents/constitucion/constitucion.txt"
  */
-import * as dotenv from "dotenv";
-dotenv.config({ path: ".env.local" });
-
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { readFileSync, existsSync } from "fs";
@@ -79,18 +86,21 @@ async function main() {
 
   const supabaseUrl =
     process.env.SUPABASE_URL ?? process.env.NEXT_PUBLIC_SUPABASE_URL;
-  const supabaseKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
+  const serviceKey = process.env.SUPABASE_SERVICE_ROLE_KEY;
   const openaiKey = process.env.OPENAI_API_KEY;
 
-  if (!supabaseUrl || !supabaseKey) {
-    console.error(
-      "Falta SUPABASE_URL (o NEXT_PUBLIC_SUPABASE_URL) o SUPABASE_SERVICE_ROLE_KEY."
+  if (!supabaseUrl) {
+    throw new Error(
+      "Falta SUPABASE_URL o NEXT_PUBLIC_SUPABASE_URL en el entorno (.env.local)."
     );
-    process.exit(1);
+  }
+  if (!serviceKey) {
+    throw new Error(
+      "Falta SUPABASE_SERVICE_ROLE_KEY en el entorno (.env.local)."
+    );
   }
   if (!openaiKey) {
-    console.error("Falta OPENAI_API_KEY.");
-    process.exit(1);
+    throw new Error("Falta OPENAI_API_KEY en el entorno (.env.local).");
   }
 
   if (!existsSync(filePath)) {
@@ -102,26 +112,34 @@ async function main() {
   const contentText = normalizeText(rawText);
   const contentHash = sha256(contentText);
 
-  const supabase = createClient(supabaseUrl, supabaseKey);
+  const supabase = createClient(supabaseUrl, serviceKey);
   const openai = new OpenAI({ apiKey: openaiKey });
 
   console.log("1) Source ManualUpload...");
   let sourceId: string | null = null;
-  const { data: existingSource } = await supabase
+  const { data: existingSource, error: errSelect } = await supabase
     .from("sources")
     .select("id")
     .eq("name", "ManualUpload")
     .eq("base_url", "manual://")
     .limit(1)
     .maybeSingle();
+  if (errSelect) {
+    console.error("Supabase error:", errSelect);
+    process.exit(1);
+  }
   if (existingSource?.id) {
     sourceId = existingSource.id;
   } else {
-    const { data: inserted } = await supabase
+    const { data: inserted, error: errInsert } = await supabase
       .from("sources")
       .insert({ name: "ManualUpload", base_url: "manual://" })
       .select("id")
       .single();
+    if (errInsert) {
+      console.error("Supabase error:", errInsert);
+      process.exit(1);
+    }
     sourceId = inserted?.id ?? null;
   }
   if (!sourceId) {

@@ -1,167 +1,260 @@
 "use client";
 
-import { useState } from "react";
-import { Chatbot } from "@/components/chat/Chatbot";
+import { useState, useEffect } from "react";
 import Link from "next/link";
+import { QueryPanel } from "@/components/chat/QueryPanel";
 
-export const dynamic = "force-dynamic";
-
-const EXAMPLE_QUERIES = [
-  "¿Qué es la renuncia voluntaria en el trabajo y qué efectos tiene en RD?",
-  "¿Cuáles son los requisitos para un divorcio de mutuo acuerdo en República Dominicana?",
-  "¿Qué dice la ley sobre el preaviso en un contrato de colaboración independiente?",
+const AREAS = [
+  { id: "laboral", icon: "👔", name: "Derecho Laboral", desc: "Contratos, despidos, prestaciones, preaviso", query: "¿Cuáles son los derechos laborales de un trabajador en caso de despido injustificado en República Dominicana?" },
+  { id: "familia", icon: "👨‍👩‍👧", name: "Derecho de Familia", desc: "Divorcios, custodia, adopción, pensiones", query: "¿Cuáles son los requisitos para un divorcio de mutuo acuerdo en República Dominicana?" },
+  { id: "inmobiliario", icon: "🏠", name: "Derecho Inmobiliario", desc: "Títulos, arrendamientos, registro, compraventa", query: "¿Cómo funciona el proceso de compraventa de inmuebles en República Dominicana?" },
+  { id: "comercial", icon: "🏢", name: "Derecho Comercial", desc: "SRL, SA, deudas, contratos, quiebras", query: "¿Qué se necesita para constituir una SRL en República Dominicana?" },
+  { id: "civil", icon: "⚖️", name: "Derecho Civil", desc: "Obligaciones, herencias, contratos, daños", query: "¿Cómo funciona el proceso de sucesión y herencia en República Dominicana?" },
+  { id: "penal", icon: "🚨", name: "Derecho Penal", desc: "Delitos, procesos, derechos del imputado", query: "¿Cuáles son los derechos del imputado en el proceso penal dominicano?" },
+  { id: "constitucional", icon: "🏛️", name: "Derecho Constitucional", desc: "Derechos fundamentales, amparo, garantías", query: "¿Qué es el recurso de amparo y cuándo se puede utilizar en RD?" },
 ];
 
+const FAQS = [
+  { q: "¿InfoLegal RD reemplaza a un abogado?", a: "No. InfoLegal RD ofrece orientación educativa e informativa. Para representación legal o asesoría formal, siempre es recomendable consultar un abogado colegiado en el Colegio de Abogados de la República Dominicana." },
+  { q: "¿En qué leyes se basa el sistema?", a: "El sistema está indexado con la Constitución dominicana, Código Civil, Código Laboral (Ley 16-92), Código Penal, Código de Comercio, y más de 50 leyes especiales vigentes en RD." },
+  { q: "¿Qué es el modo Máxima Confiabilidad?", a: "Este modo aplica una capa adicional de verificación con referencias específicas a artículos legales y revisión de jurisprudencia aplicable. Ideal para consultas técnicas o de mayor sensibilidad." },
+  { q: "¿Mis consultas son confidenciales?", a: "Las consultas no se almacenan con datos personales identificables. Recomendamos no incluir información personal sensible como cédulas o nombres en tus preguntas." },
+  { q: "¿El servicio tiene costo?", a: "InfoLegal RD es completamente gratuito para consultas informativas. Funcionalidades avanzadas como plantillas legales personalizadas y análisis extendido pueden requerir registro." },
+];
+
+function CursorGlow() {
+  const [pos, setPos] = useState({ x: 0, y: 0 });
+  useEffect(() => {
+    const onMove = (e: MouseEvent) => setPos({ x: e.clientX, y: e.clientY });
+    window.addEventListener("mousemove", onMove);
+    return () => window.removeEventListener("mousemove", onMove);
+  }, []);
+  return (
+    <div
+      className="cursor-glow"
+      style={{ left: pos.x, top: pos.y }}
+      aria-hidden
+    />
+  );
+}
+
 export default function HomePage() {
+  const [openFaq, setOpenFaq] = useState<number | null>(null);
   const [suggestedQuery, setSuggestedQuery] = useState<string | null>(null);
 
+  const scrollTo = (id: string) => {
+    const el = document.getElementById(id);
+    el?.scrollIntoView({ behavior: "smooth", block: "start" });
+  };
+
+  const fillFromArea = (query: string) => {
+    setSuggestedQuery(query);
+    scrollTo("panel");
+  };
+
   return (
-    <div className="min-h-screen bg-slate-50 dark:bg-slate-900">
-      {/* Indicador de sistema */}
-      <div className="border-b border-slate-200 bg-white/80 py-2 dark:border-slate-700 dark:bg-slate-800/80">
-        <div className="mx-auto max-w-4xl px-4 text-center text-sm text-slate-600 dark:text-slate-400">
-          <span className="inline-flex items-center gap-2">
-            <span className="relative flex h-2 w-2">
-              <span className="absolute inline-flex h-full w-full animate-ping rounded-full bg-emerald-400 opacity-75" />
-              <span className="relative inline-flex h-2 w-2 rounded-full bg-emerald-500" />
-            </span>
-            Sistema activo — análisis legal informativo
-          </span>
+    <div className="page-v2 min-h-screen">
+      <CursorGlow />
+
+      <nav className="nav-v2">
+        <Link href="/" className="logo-v2">
+          <div className="logo-mark">⚖️</div>
+          <span className="logo-type">Info<span>Legal</span> RD</span>
+        </Link>
+        <ul className="nav-center">
+          <li><a href="#consulta" onClick={(e) => { e.preventDefault(); scrollTo("consulta"); }}>Consultar</a></li>
+          <li><a href="#consulta">Áreas</a></li>
+          <li><a href="#como-funciona" onClick={(e) => { e.preventDefault(); scrollTo("como-funciona"); }}>Proceso</a></li>
+          <li><a href="#faqs" onClick={(e) => { e.preventDefault(); scrollTo("faqs"); }}>FAQs</a></li>
+          <li><Link href="/plantillas">Plantillas</Link></li>
+        </ul>
+        <div style={{ display: "flex", gap: 12, alignItems: "center" }}>
+          <Link href="/login" className="btn-ghost">Iniciar sesión</Link>
+          <button type="button" className="btn-sage" onClick={() => scrollTo("consulta")}>
+            Consultar ahora
+          </button>
         </div>
-      </div>
+      </nav>
 
-      <div className="mx-auto max-w-4xl px-4 py-8">
-        {/* Hero profesional */}
-        <header className="mb-10 text-center">
-          <h1 className="text-4xl font-bold tracking-tight text-slate-900 dark:text-white sm:text-5xl">
-            Asistente Legal Informativo para República Dominicana
+      <section className="hero">
+        <div className="hero-inner">
+          <div className="hero-label">
+            <span className="live-dot" />
+            Sistema activo · IA Legal Dominicana
+          </div>
+          <h1 className="hero-title">
+            <span className="dim">Derecho</span> dominicano
+            <br />
+            al alcance de <span className="italic">todos.</span>
           </h1>
-          <p className="mx-auto mt-3 max-w-2xl text-lg text-slate-600 dark:text-slate-300">
-            Consulta normativa dominicana con análisis asistido por inteligencia artificial.
+          <p className="hero-sub">
+            Consulta normativa legal de la República Dominicana analizada por inteligencia artificial. Información estructurada, clara y fundamentada en legislación vigente.
           </p>
-          <div className="mt-6 flex flex-wrap justify-center gap-3">
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              ✔ Información legal educativa
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              ✔ Basado en legislación dominicana
-            </span>
-            <span className="inline-flex items-center gap-1.5 rounded-full border border-slate-200 bg-white px-4 py-2 text-sm text-slate-700 shadow-sm dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200">
-              ✔ No sustituye asesoría profesional
-            </span>
+          <div className="hero-actions">
+            <button type="button" className="btn-primary" onClick={() => scrollTo("consulta")}>
+              ⚖️ Hacer una consulta
+            </button>
+            <button type="button" className="btn-outline" onClick={() => scrollTo("como-funciona")}>
+              Ver cómo funciona
+            </button>
           </div>
-        </header>
-
-        {/* ¿Cómo funciona? */}
-        <section className="mb-10">
-          <h2 className="mb-6 text-center text-xl font-semibold text-slate-800 dark:text-slate-100">
-            ¿Cómo funciona?
-          </h2>
-          <div className="grid gap-4 sm:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-3 text-2xl">1️⃣</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">Haces tu consulta</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Escribe tu duda de forma general o elige un ejemplo de consulta.
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-3 text-2xl">2️⃣</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">IA analiza normativa dominicana</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Nuestro sistema cruza fuentes oficiales y normativa aplicable en RD.
-              </p>
-            </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-3 text-2xl">3️⃣</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">Recibes orientación estructurada</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Respuesta organizada con marco legal, preguntas esenciales y advertencias.
-              </p>
+          <div className="stats-bar">
+            <div className="stats-bar-inner">
+              <div className="stat">
+                <div className="stat-n">+50<span></span></div>
+                <div className="stat-l">Leyes indexadas</div>
+              </div>
+              <div className="stat">
+                <div className="stat-n">24<span>/7</span></div>
+                <div className="stat-l">Disponible siempre</div>
+              </div>
+              <div className="stat">
+                <div className="stat-n">100<span>%</span></div>
+                <div className="stat-l">Gratuito</div>
+              </div>
+              <div className="stat">
+                <div className="stat-n">RD<span></span></div>
+                <div className="stat-l">Normativa local</div>
+              </div>
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* Ejemplos clicables */}
-        <section className="mb-6">
-          <p className="mb-3 text-sm font-medium text-slate-600 dark:text-slate-400">
-            Ejemplos de consultas:
+      <section className="query-section" id="consulta">
+        <div className="qs-left">
+          <div className="qs-tag">Áreas de práctica</div>
+          <h2 className="qs-title">¿En qué área necesitas orientación?</h2>
+          <p className="qs-desc">
+            Selecciona un área o escribe directamente tu consulta. Cubrimos las principales ramas del derecho dominicano.
           </p>
-          <div className="flex flex-wrap gap-2">
-            {EXAMPLE_QUERIES.map((q) => (
-              <button
-                key={q}
-                type="button"
-                onClick={() => setSuggestedQuery(q)}
-                className="rounded-lg border border-slate-200 bg-white px-4 py-2.5 text-left text-sm text-slate-700 shadow-sm transition-colors hover:border-[#1e40af] hover:bg-blue-50 hover:text-[#1e40af] dark:border-slate-600 dark:bg-slate-800 dark:text-slate-200 dark:hover:border-blue-500 dark:hover:bg-slate-700"
+          <div className="areas-list">
+            {AREAS.map((area) => (
+              <div
+                key={area.id}
+                role="button"
+                tabIndex={0}
+                className="area-row"
+                onClick={() => fillFromArea(area.query)}
+                onKeyDown={(e) => e.key === "Enter" && fillFromArea(area.query)}
               >
-                {q}
-              </button>
+                <div className="area-row-icon">{area.icon}</div>
+                <div className="area-row-text">
+                  <div className="area-row-name">{area.name}</div>
+                  <div className="area-row-desc">{area.desc}</div>
+                </div>
+                <div className="area-row-arrow">→</div>
+              </div>
             ))}
           </div>
-        </section>
+        </div>
+        <QueryPanel suggestedQuery={suggestedQuery} onSuggestionApplied={() => setSuggestedQuery(null)} />
+      </section>
 
-        {/* Tarjetas de confianza */}
-        <section className="mb-6">
-          <div className="grid gap-4 md:grid-cols-3">
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-2 text-2xl">🛡️</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">Protección Legal</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Explicaciones claras sobre tus derechos.
+      <section className="section-how" id="como-funciona">
+        <div className="inner">
+          <div className="section-eyebrow">Proceso</div>
+          <h2 className="section-heading">Cómo funciona InfoLegal RD</h2>
+          <div className="how-grid">
+            <div className="how-card">
+              <div className="how-num">01</div>
+              <div className="how-icon">✍️</div>
+              <div className="how-title">Escribe tu consulta</div>
+              <p className="how-desc">
+                Describe tu situación en lenguaje cotidiano o elige un ejemplo. No necesitas conocimientos legales previos.
               </p>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-2 text-2xl">⚖️</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">Normativa Dominicana</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Basado en Constitución y leyes vigentes.
+            <div className="how-card">
+              <div className="how-num">02</div>
+              <div className="how-icon">🔍</div>
+              <div className="how-title">IA analiza la normativa</div>
+              <p className="how-desc">
+                El sistema cruza tu pregunta con la Constitución dominicana, Códigos Civil, Laboral, Penal y leyes especiales vigentes.
               </p>
             </div>
-            <div className="rounded-xl border border-slate-200 bg-white p-5 shadow-sm dark:border-slate-600 dark:bg-slate-800/50">
-              <div className="mb-2 text-2xl">🤖</div>
-              <h3 className="font-medium text-slate-900 dark:text-white">IA Revisada</h3>
-              <p className="mt-1 text-sm text-slate-600 dark:text-slate-400">
-                Modo Máxima Confiabilidad disponible.
+            <div className="how-card">
+              <div className="how-num">03</div>
+              <div className="how-icon">📋</div>
+              <div className="how-title">Recibes orientación estructurada</div>
+              <p className="how-desc">
+                Respuesta organizada con marco legal aplicable, artículos relevantes, preguntas clave y próximos pasos recomendados.
               </p>
             </div>
           </div>
-        </section>
+        </div>
+      </section>
 
-        {/* Chat */}
-        <Chatbot
-          suggestedQuery={suggestedQuery ?? undefined}
-          onSuggestionApplied={() => setSuggestedQuery(null)}
-        />
-      </div>
+      <section className="section-faq" id="faqs">
+        <div className="inner">
+          <div>
+            <div className="section-eyebrow">Preguntas frecuentes</div>
+            <h2 className="section-heading" style={{ fontSize: 42 }}>Lo que necesitas saber</h2>
+          </div>
+          <div className="faq-items">
+            {FAQS.map((faq, i) => (
+              <div
+                key={i}
+                className={`faq-item ${openFaq === i ? "open" : ""}`}
+              >
+                <button
+                  type="button"
+                  className="faq-btn"
+                  onClick={() => setOpenFaq(openFaq === i ? null : i)}
+                >
+                  {faq.q}
+                  <div className="faq-plus">+</div>
+                </button>
+                <div className="faq-ans">{faq.a}</div>
+              </div>
+            ))}
+          </div>
+        </div>
+      </section>
 
-      {/* Footer de confianza legal */}
-      <footer className="mt-12 border-t border-slate-200 bg-white py-8 dark:border-slate-700 dark:bg-slate-800/50">
-        <div className="mx-auto max-w-4xl px-4">
-          <p className="text-center text-xs text-slate-500 dark:text-slate-400">
-            InfoLegal RD ofrece orientación educativa basada en normativa dominicana. No constituye
-            asesoría legal ni relación abogado-cliente.
-          </p>
-          <nav className="mt-4 flex justify-center gap-6 text-sm">
-            <Link
-              href="#"
-              className="text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline dark:text-slate-400 dark:hover:text-slate-200"
-            >
-              Privacidad
-            </Link>
-            <Link
-              href="#"
-              className="text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline dark:text-slate-400 dark:hover:text-slate-200"
-            >
-              Términos
-            </Link>
-            <Link
-              href="#"
-              className="text-slate-500 underline-offset-2 hover:text-slate-700 hover:underline dark:text-slate-400 dark:hover:text-slate-200"
-            >
-              Contacto
-            </Link>
-          </nav>
+      <footer className="footer-v2">
+        <div className="footer-top">
+          <div>
+            <div className="logo-v2" style={{ alignItems: "center", gap: 12 }}>
+              <div className="logo-mark">⚖️</div>
+              <span className="logo-type">Info<span>Legal</span> RD</span>
+            </div>
+            <p className="footer-desc">
+              Orientación legal informativa para la República Dominicana, impulsada por inteligencia artificial. No constituye asesoría legal profesional.
+            </p>
+          </div>
+          <div>
+            <div className="footer-col-title">Navegación</div>
+            <ul className="footer-links-col">
+              <li><Link href="/">Inicio</Link></li>
+              <li><a href="#consulta" onClick={(e) => { e.preventDefault(); scrollTo("consulta"); }}>Hacer consulta</a></li>
+              <li><a href="#consulta">Áreas legales</a></li>
+              <li><a href="#faqs" onClick={(e) => { e.preventDefault(); scrollTo("faqs"); }}>Preguntas frecuentes</a></li>
+            </ul>
+          </div>
+          <div>
+            <div className="footer-col-title">Recursos</div>
+            <ul className="footer-links-col">
+              <li><Link href="/plantillas">Plantillas legales</Link></li>
+              <li><a href="#">Glosario jurídico</a></li>
+              <li><a href="#">Legislación RD</a></li>
+              <li><a href="#">Blog</a></li>
+            </ul>
+          </div>
+          <div>
+            <div className="footer-col-title">Legal</div>
+            <ul className="footer-links-col">
+              <li><a href="#">Términos de uso</a></li>
+              <li><a href="#">Privacidad</a></li>
+              <li><a href="#">Aviso legal</a></li>
+              <li><a href="#">Contacto</a></li>
+            </ul>
+          </div>
+        </div>
+        <div className="footer-bottom">
+          <span className="footer-copy">© 2025 InfoLegal RD. Todos los derechos reservados.</span>
+          <span className="footer-note">
+            Orientación educativa únicamente. No constituye asesoría legal ni relación abogado-cliente.
+          </span>
         </div>
       </footer>
     </div>
