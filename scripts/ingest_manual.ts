@@ -24,6 +24,10 @@ import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
 import { createHash } from "crypto";
 
+/** Cliente Supabase sin tipado estricto: las tablas RAG (sources, instruments, etc.) no están en Database de la app. */
+// eslint-disable-next-line @typescript-eslint/no-explicit-any
+type SupabaseClientAny = any;
+
 const CHUNK_SIZE = 1000;
 const CHUNK_OVERLAP = 150;
 const EMBEDDING_MODEL = "text-embedding-3-small";
@@ -33,9 +37,14 @@ function parseArgs(): Record<string, string> {
   const out: Record<string, string> = {};
   const argv = process.argv.slice(2);
   for (let i = 0; i < argv.length; i++) {
-    if (argv[i].startsWith("--") && argv[i + 1] !== undefined) {
-      out[argv[i].slice(2)] = argv[i + 1];
+    if (!argv[i].startsWith("--")) continue;
+    const key = argv[i].slice(2);
+    const next = argv[i + 1];
+    if (next !== undefined && !next.startsWith("--")) {
+      out[key] = next;
       i++;
+    } else {
+      out[key] = "1";
     }
   }
   return out;
@@ -159,7 +168,7 @@ async function getEmbedding(openai: OpenAI, text: string): Promise<number[]> {
 }
 
 async function ingestOne(
-  supabase: ReturnType<typeof createClient>,
+  supabase: SupabaseClientAny,
   openai: OpenAI,
   filePath: string,
   opts: { published: string; status: string; source_url: string }
@@ -304,7 +313,7 @@ async function main() {
     throw new Error("Falta OPENAI_API_KEY en .env.local");
   }
 
-  const supabase = createClient(supabaseUrl, serviceKey);
+  const supabase = createClient(supabaseUrl, serviceKey) as SupabaseClientAny;
   const openai = new OpenAI({ apiKey: openaiKey });
 
   const opts = { published, status, source_url: sourceUrl };
