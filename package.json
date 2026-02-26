@@ -8,7 +8,8 @@
     "start": "next start",
     "lint": "next lint",
     "ingest:constitucion": "tsx scripts/ingest_constitucion.ts",
-    "ingest:manual": "tsx scripts/ingest_manual.ts"
+    "ingest:manual": "tsx scripts/ingest_manual.ts",
+    "crawl:consultoria": "tsx scripts/crawl_consultoria.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

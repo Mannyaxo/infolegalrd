@@ -29,6 +29,13 @@ npm run dev
 
 Abre [http://localhost:3000](http://localhost:3000).
 
+## Ingesta de leyes (RAG)
+
+Para cargar normativa desde archivos TXT o desde consultoria.gov.do, ver **[docs/INGESTA_LEYES.md](./docs/INGESTA_LEYES.md)**. Resumen:
+
+- **Ingesta manual (batch):** `npm run ingest:manual -- --all` o `--files "path1,path2"`
+- **Crawler consultoria.gov.do:** `npm run crawl:consultoria` (requiere `FIRECRAWL_API_KEY` en `.env.local`)
+
 ## Despliegue en Vercel
 
 Ver **[DEPLOY.md](./DEPLOY.md)** para:

@@ -31,6 +31,12 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
   const [content, setContent] = useState("");
   const [clarifyQuestions, setClarifyQuestions] = useState<string[]>([]);
   const [rejectMessage, setRejectMessage] = useState("");
+  const [lastQuery, setLastQuery] = useState("");
+  const [lastResponse, setLastResponse] = useState("");
+  const [lastMode, setLastMode] = useState<"standard" | "max-reliability">("standard");
+  const [feedbackText, setFeedbackText] = useState("");
+  const [feedbackSending, setFeedbackSending] = useState(false);
+  const [feedbackSent, setFeedbackSent] = useState(false);
   const panelRef = useRef<HTMLDivElement>(null);
   const supabase = useSupabase();
   const { user } = useAuth(supabase);
@@ -87,13 +93,46 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
 
       if (data.type === "answer") {
         setResponse("answer");
-        setContent(data.content ?? "");
+        const answerContent = data.content ?? "";
+        setContent(answerContent);
+        setLastQuery(text);
+        setLastResponse(answerContent);
+        setLastMode(maxReliability ? "max-reliability" : "standard");
+        setFeedbackSent(false);
       }
     } catch {
       setResponse("reject");
       setRejectMessage("Error de conexión. Intenta de nuevo.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const sendFeedback = async () => {
+    const text = feedbackText.trim();
+    if (feedbackSending || feedbackSent) return;
+    setFeedbackSending(true);
+    try {
+      const res = await fetch("/api/feedback", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({
+          query: lastQuery,
+          response: lastResponse,
+          feedback: text || "(sin texto)",
+          timestamp: new Date().toISOString(),
+          mode: lastMode,
+          userId: user?.id ?? null,
+        }),
+      });
+      if (res.ok) {
+        setFeedbackSent(true);
+        setFeedbackText("");
+      }
+    } catch {
+      // silencioso
+    } finally {
+      setFeedbackSending(false);
     }
   };
 
@@ -186,6 +225,45 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
               </div>
             )}
           </div>
+        </div>
+      )}
+
+      {response === "answer" && content && (
+        <div style={{ padding: "0 28px 16px", borderTop: "1px solid var(--border)" }}>
+          <textarea
+            placeholder="¿Qué te pareció la respuesta? ¿Algo incorrecto o que mejorar? (opcional)"
+            value={feedbackText}
+            onChange={(e) => setFeedbackText(e.target.value)}
+            disabled={feedbackSent}
+            style={{
+              width: "100%",
+              minHeight: 56,
+              padding: 10,
+              fontSize: 12,
+              background: "var(--surface)",
+              border: "1px solid var(--border2)",
+              borderRadius: 6,
+              color: "var(--off-white)",
+              resize: "vertical",
+            }}
+          />
+          <button
+            type="button"
+            onClick={sendFeedback}
+            disabled={feedbackSending || feedbackSent}
+            style={{
+              marginTop: 8,
+              padding: "6px 14px",
+              fontSize: 12,
+              background: feedbackSent ? "var(--sage-dim)" : "var(--surface2)",
+              color: "var(--muted)",
+              border: "1px solid var(--border2)",
+              borderRadius: 6,
+              cursor: feedbackSent ? "default" : "pointer",
+            }}
+          >
+            {feedbackSent ? "Gracias" : "Enviar feedback"}
+          </button>
         </div>
       )}
 

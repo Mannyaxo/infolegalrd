@@ -359,8 +359,8 @@ function extractJson<T>(raw: string): T | null {
 const MAX_RELIABILITY_DISCLAIMER =
   "Modo experimental de máxima confiabilidad. Respuesta revisada por juez, pero sigue siendo información general, no asesoría legal.";
 
-/** topK para RAG en modo max-reliability (configurable). */
-const MAX_RELIABILITY_TOP_K = 6;
+/** topK para RAG en ambos modos (siempre retrieval con match_vigente_chunks). */
+const RAG_TOP_K = 8;
 
 type MaxReliabilityCitation = {
   instrument: string;
@@ -403,6 +403,38 @@ function allArticleMentionsInText(mentions: string[], chunkText: string): boolea
   return true;
 }
 
+/** Obtiene las menciones de artículos que NO aparecen en el texto de los chunks. */
+function getUnverifiedArticleMentions(answerText: string, allChunkText: string): string[] {
+  const mentions = extractArticleMentions(answerText);
+  if (mentions.length === 0) return [];
+  const lower = allChunkText.toLowerCase();
+  return mentions.filter((m) => m && !lower.includes(m.toLowerCase()));
+}
+
+/**
+ * Post-check anti-alucinación: elimina de la respuesta las partes que citan artículos
+ * no presentes en los chunks y añade caveat.
+ */
+function stripUnverifiedArticlesAndAddCaveat(answerText: string, allChunkText: string): {
+  cleaned: string;
+  caveat: string;
+} {
+  const unverified = getUnverifiedArticleMentions(answerText, allChunkText);
+  if (unverified.length === 0) return { cleaned: answerText, caveat: "" };
+  const caveat =
+    "Los siguientes artículos no pudieron verificarse en las fuentes oficiales cargadas: " +
+    unverified.join(", ") +
+    ".";
+  const unverifiedLower = unverified.map((u) => u.toLowerCase());
+  const sentences = answerText.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((s) => {
+    const low = s.toLowerCase();
+    return !unverifiedLower.some((u) => low.includes(u));
+  });
+  const cleaned = kept.join(" ").replace(/\s+/g, " ").trim();
+  return { cleaned, caveat };
+}
+
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
@@ -438,14 +470,14 @@ export async function POST(request: NextRequest) {
 
     const historyText = formatHistory(history);
 
-    // Contexto RAG opcional (instrumentos VIGENTES: Constitución u otros ingeridos)
-    let ragContext = { text: "", citations: [] as Array<{ title: string; source_url: string; published_date: string; status: string; type?: string; number?: string | null }> };
+    // RAG obligatorio en ambos modos (match_vigente_chunks, topK=8)
+    let chunks: VigenteChunk[] = [];
     try {
-      const chunks = await retrieveVigenteChunks(message, 6);
-      ragContext = formatVigenteContext(chunks);
+      chunks = await retrieveVigenteChunks(message, RAG_TOP_K);
     } catch {
       // RAG no disponible o sin embeddings
     }
+    const ragContext = formatVigenteContext(chunks);
     const ragBlock = ragContext.text
       ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks recuperados o en la metadata explícita proporcionada (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". Si mencionas published_date, effective_date, source_url o gazette_ref, cita que provienen de los metadatos del sistema. Responde basándote solo en este contexto; incluye Confidence (0-1), Caveats, Next steps y Citations. No inventes artículos.`
       : "";
@@ -453,44 +485,15 @@ export async function POST(request: NextRequest) {
     // ————— Modo Máxima Confiabilidad (anti-alucinación) —————
     if (mode === "max-reliability") {
       const supabase = getSupabaseServer();
-      let retrievedChunks: VigenteChunk[] = [];
-      try {
-        const embedding = await embedQuery(message);
-        if (supabase && embedding.length > 0) {
-          retrievedChunks = await retrieveVigenteChunksWithEmbedding(supabase, embedding, MAX_RELIABILITY_TOP_K);
-        }
-      } catch {
-        // RAG no disponible
-      }
+      const retrievedChunks = chunks;
 
-      // CAPA 1: Sin chunks — orientar sin bloquear; no conclusiones legales ni citas
+      // CAPA 1: Sin chunks — NEED_MORE_INFO + preguntas clave (clarify)
       if (retrievedChunks.length === 0) {
-        const noEvidencePayload = {
-          ok: true as const,
-          mode: "max-reliability" as const,
-          decision: "NO_EVIDENCE" as const,
-          confidence: 0.95,
-          answer:
-            "No se encontró evidencia en la base de instrumentos vigentes cargada para responder con citas verificables.\n\n**Orientación general:** Puedes localizar la norma aplicable identificando el tipo de texto (ley, reglamento, Constitución), la entidad que lo emite (Congreso, Poder Ejecutivo, órgano regulador) y el año de publicación. Consulta la Gaceta Oficial o el portal del organismo correspondiente. No cito artículos ni leyes concretas porque no hay evidencia recuperada en esta sesión.",
-          missing_info_questions: [
-            "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
-            "¿Sabe el nombre o número de la ley o el año de publicación?",
-            "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
-          ],
-          next_steps: [
-            "Identifique el documento o ley que podría aplicar (nombre, número, año).",
-            "Busque el texto vigente en la fuente oficial (ej. gacetaoficial.gob.do, página del organismo).",
-            "Ingeste aquí la versión vigente del instrumento (texto completo) para poder citarla.",
-            "Vuelva a formular la consulta una vez cargada la fuente.",
-          ],
-          caveats: ["No se citan artículos ni leyes específicas porque no hay evidencia recuperada."],
-          citations: [] as MaxReliabilityCitation[],
-          questions: [
-            "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
-            "¿Sabe el nombre o número de la ley o el año de publicación?",
-            "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
-          ],
-        };
+        const keyQuestions = [
+          "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
+          "¿Sabe el nombre o número de la ley o el año de publicación?",
+          "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
+        ];
         try {
           if (supabase) {
             await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
@@ -508,7 +511,7 @@ export async function POST(request: NextRequest) {
         } catch {
           // no bloquear
         }
-        return NextResponse.json(noEvidencePayload, { status: 200 });
+        return NextResponse.json({ type: "clarify", questions: keyQuestions } satisfies ChatResponse, { status: 200 });
       }
 
       const { contextText, allChunkText } = formatMaxReliabilityContext(retrievedChunks, 12000);
@@ -623,27 +626,13 @@ export async function POST(request: NextRequest) {
       // Citations reales: solo source_url presentes en chunks
       citations = citations.filter((c) => allowedSourceUrls.has((c.source_url ?? "").trim()));
 
-      // CAPA 3: Post-check — artículos mencionados deben aparecer literalmente en chunks (PROHIBIDO citar números no presentes)
-      const articleMentions = extractArticleMentions(answer);
-      if (articleMentions.length > 0 && !allArticleMentionsInText(articleMentions, allChunkText)) {
+      // CAPA 3: Post-check — artículos no verificados: eliminar esa parte y añadir caveat
+      const { cleaned: answerCleaned, caveat: articleCaveat } = stripUnverifiedArticlesAndAddCaveat(answer, allChunkText);
+      if (articleCaveat) {
         decision = "UNVERIFIED_CITATION";
         confidence = 0.6;
-        answer =
-          "No pude verificar esos artículos en las fuentes cargadas. Para evitar errores, no los afirmaré.";
-        missingInfo = [
-          "¿Puede indicar en qué documento o ley concreta aparece el artículo que busca?",
-          "¿Ha ingerido aquí el texto vigente completo de esa norma?",
-        ];
-        nextSteps = [
-          "Verifique el número de artículo en el texto oficial (Gaceta o portal de la entidad).",
-          "Ingeste la versión vigente del instrumento si aún no está cargada.",
-          "Reformule la consulta limitándose a lo que sí está en las fuentes cargadas.",
-        ];
-        caveats = [
-          "Se detectaron menciones de artículos no presentes en el contexto RAG; no se publican.",
-          "En modo máxima confiabilidad está prohibido citar números no presentes en los chunks.",
-        ];
-        // citations: solo las reales (se mantienen las ya filtradas por allowedSourceUrls)
+        answer = answerCleaned + "\n\n**Nota:** " + articleCaveat;
+        caveats = [...caveats, articleCaveat];
       }
 
       const finalCitationsForLog = citations.map((c) => ({
@@ -693,6 +682,31 @@ export async function POST(request: NextRequest) {
         // no bloquear respuesta por fallo de log
       }
       return NextResponse.json(payload, { status: 200 });
+    }
+
+    // Modo normal sin chunks: respuesta general + disclaimer (no citar artículos)
+    if (chunks.length === 0) {
+      const generalPrompt =
+        `${DISCLAIMER_HARD_RULES}\nResponde de forma breve y general sobre derecho dominicano a la siguiente consulta. No cites artículos ni leyes concretas; solo orientación general en 2-4 líneas.`;
+      let generalAnswer = "";
+      try {
+        generalAnswer = await callClaudeWithFallback({
+          apiKey: anthropicKey,
+          system: generalPrompt,
+          user: `Consulta: ${message}`,
+          max_tokens: 400,
+          temperature: 0.2,
+        });
+      } catch {
+        generalAnswer = "No pude generar una orientación en este momento. Te recomiendo reformular la consulta o indicar el área legal (laboral, familia, civil, etc.) para una mejor respuesta.";
+      }
+      const withDisclaimer =
+        DISCLAIMER_PREFIX +
+        (generalAnswer.trim() || "Orientación general no disponible.") +
+        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos.";
+      return NextResponse.json({ type: "answer", content: withDisclaimer, note: undefined } satisfies ChatResponse, {
+        status: 200,
+      });
     }
 
     // B) Clarificador con Claude
@@ -1008,7 +1022,16 @@ export async function POST(request: NextRequest) {
       final = `${note}\n\n${final}`;
     }
 
-    if (ragContext.citations.length > 0) {
+    // Post-check: artículos mencionados deben estar en chunks; si no, eliminar parte y caveat
+    const allChunkTextStandard = chunks.map((c) => c.chunk_text).join("\n");
+    const { cleaned: finalCleaned, caveat: standardCaveat } = stripUnverifiedArticlesAndAddCaveat(final, allChunkTextStandard);
+    if (standardCaveat) {
+      final = finalCleaned + "\n\n**Nota:** " + standardCaveat;
+    } else {
+      final = finalCleaned;
+    }
+
+    if (chunks.length > 0 && ragContext.citations.length > 0) {
       const fuentesLines = ragContext.citations.map(
         (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
       );
