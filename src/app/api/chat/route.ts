@@ -28,6 +28,36 @@ Reglas estrictas:
 - Siempre escribe en español, con precisión y prudencia.
 `;
 
+/** Estructura obligatoria de respuesta RAG: asistente jurídico práctico para ciudadanos. */
+const RAG_RESPONSE_STRUCTURE = `
+ESTRUCTURA OBLIGATORIA DE RESPUESTA (respeta siempre este orden):
+
+1️⃣ CONCLUSIÓN DIRECTA
+- Respuesta clara en 3–5 líneas.
+- Indica si la situación parece legal, irregular o posiblemente abusiva.
+
+2️⃣ BASE LEGAL
+- Cita artículos específicos solo si aparecen en el contexto proporcionado.
+- Indica ley o Constitución y número de artículo cuando esté disponible.
+- Si no hay base suficiente en el contexto, dilo claramente (ej. "No consta en las fuentes cargadas").
+
+3️⃣ CÓMO PROCEDER (PASO A PASO)
+- Paso 1, Paso 2, Paso 3...
+- Indica documentos o acciones concretas cuando el contexto lo permita.
+
+4️⃣ SI LA INSTITUCIÓN NO RESPONDE
+- Vías administrativas, recursos disponibles, instancias competentes (solo si aplica y hay base en el contexto).
+
+5️⃣ RIESGOS O PRECAUCIONES
+- Advertencias prácticas y qué no hacer.
+
+REGLAS DE REDACCIÓN:
+- No inventes artículos ni procedimientos. Solo cita lo que esté en el contexto/metadatos.
+- Tono profesional, firme y práctico. Evita lenguaje excesivamente académico.
+- Prioriza normas de mayor jerarquía: Constitución > Ley > Decreto.
+- Si falta información para una sección, indica "No hay información suficiente en las fuentes cargadas" en esa parte.
+`;
+
 const BUSQUEDA_PROMPT = (tema: string) =>
   `Busca y cita textualmente leyes, reglamentos, Constitución RD, jurisprudencia SCJ/TC con números y fechas, doctrina y actualizaciones 2026 relevantes a ${tema}. Prioriza fuentes oficiales: scj.gob.do, tc.gob.do, gacetaoficial.gob.do, mt.gob.do, map.gob.do.
 CRÍTICO: NUNCA inventes o resumas el contenido de un artículo de ley por tu cuenta. Si no tienes el texto literal del artículo frente a ti, escribe "El contenido exacto del artículo [X] debe verificarse en la Gaceta Oficial o en el texto oficial de la ley" en lugar de redactar un resumen. Los números de artículos y su contenido real no siempre coinciden entre leyes; atribuir contenido a un artículo sin verificación genera errores graves. Si no puedes verificar una cita textual, indícalo explícitamente y no inventes números ni fechas.`;
@@ -479,7 +509,7 @@ export async function POST(request: NextRequest) {
     }
     const ragContext = formatVigenteContext(chunks);
     const ragBlock = ragContext.text
-      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks recuperados o en la metadata explícita proporcionada (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". Si mencionas published_date, effective_date, source_url o gazette_ref, cita que provienen de los metadatos del sistema. Responde basándote solo en este contexto; incluye Confidence (0-1), Caveats, Next steps y Citations. No inventes artículos.`
+      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
       : "";
 
     // ————— Modo Máxima Confiabilidad (anti-alucinación) —————
@@ -517,7 +547,7 @@ export async function POST(request: NextRequest) {
       const { contextText, allChunkText } = formatMaxReliabilityContext(retrievedChunks, 12000);
       const allowedSourceUrls = new Set(retrievedChunks.map((c) => (c.citation.source_url ?? "").trim()).filter(Boolean));
 
-      // CAPA 2: Prompt restrictivo — salida JSON estricta
+      // CAPA 2: Prompt restrictivo — salida JSON estricta + estructura práctica de respuesta
       const maxReliabilitySystem =
         `${DISCLAIMER_HARD_RULES}\n` +
         `Modo MÁXIMA CONFIABILIDAD. Reglas estrictas:\n` +
@@ -526,6 +556,13 @@ export async function POST(request: NextRequest) {
         `- Si el número de artículo NO aparece literalmente en el contexto, NO lo menciones.\n` +
         `- Cada afirmación jurídica relevante debe tener al menos una cita del contexto.\n` +
         `- Si la evidencia es insuficiente o ambigua, devuelve NEED_MORE_INFO y preguntas concretas en missing_info_questions.\n` +
+        `El campo "answer" DEBE seguir esta estructura (asistente jurídico práctico):\n` +
+        `1) CONCLUSIÓN DIRECTA (3–5 líneas; indicar si parece legal, irregular o posiblemente abusivo).\n` +
+        `2) BASE LEGAL (citar solo artículos que aparezcan en el contexto; ley/Constitución y número).\n` +
+        `3) CÓMO PROCEDER (paso a paso; documentos o acciones concretas).\n` +
+        `4) SI LA INSTITUCIÓN NO RESPONDE (vías administrativas, recursos, instancias competentes si aplica).\n` +
+        `5) RIESGOS O PRECAUCIONES (advertencias prácticas, qué no hacer).\n` +
+        `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.\n` +
         `Tu salida DEBE ser ÚNICAMENTE un JSON válido, sin texto antes ni después. Schema exacto:\n` +
         `{\n` +
         `  "decision": "APPROVE" | "NEED_MORE_INFO" | "NO_EVIDENCE",\n` +
@@ -902,18 +939,16 @@ export async function POST(request: NextRequest) {
       `Resumen consulta: Agentes OK: ${successCount}/5 | Fallidos: ${failCount} | Modelos usados: ${usedModels.join(", ")}`
     );
 
-    // D) Síntesis final con Claude (juez) — Modo "Normal Seguro"
+    // D) Síntesis final con Claude (juez) — Modo "Normal Seguro" — Estructura práctica
     const judgeSystem =
       `${DISCLAIMER_HARD_RULES}\n` +
-      `Eres el juez/sintetizador final en modo "Normal Seguro". Produce una respuesta educativa y general sobre derecho dominicano.\n` +
+      `Eres el juez/sintetizador final. Produce una respuesta orientada a la acción práctica sobre derecho dominicano, clara y estructurada.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
-      `REGLA ANTI-ALUCINACIÓN (obligatoria): NUNCA cites números de artículo ni plazos exactos (días, meses) a menos que ese dato aparezca textualmente en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado en esas fuentes internas, escribe en términos generales (ej. "existen plazos legales que conviene confirmar con un abogado" o "consulte la Gaceta Oficial para el texto del artículo"). No inventes contenido de artículos ni fechas.\n\n` +
-      `Estructura de tu salida (obligatoria):\n` +
-      `1. **Framework general** (máximo 12 líneas): contexto breve, marco legal genérico y principios aplicables. Sin artículos ni plazos concretos salvo que estén verificados en las fuentes internas.\n` +
-      `2. **Tres preguntas esenciales** que el usuario debería considerar para su situación (genéricas, sin pedir datos personales).\n` +
-      `3. **Orientación adicional** (breve): recomendaciones generales y advertencia final en negrita:\n` +
-      `**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
-      `No incluyas bloques largos de normativa ni análisis detallado con artículos no verificados. Prioriza claridad y prudencia.`;
+      `REGLA ANTI-ALUCINACIÓN: NUNCA cites números de artículo ni plazos exactos a menos que aparezcan textualmente en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado, escribe en términos generales o indica "consulte la Gaceta Oficial". No inventes artículos ni procedimientos.\n\n` +
+      `Estructura OBLIGATORIA de tu salida (asistente jurídico práctico para ciudadanos):\n` +
+      `${RAG_RESPONSE_STRUCTURE}\n` +
+      `Al final de la respuesta, añade en negrita la advertencia:\n**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
+      `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.`;
 
     const judgeUser =
       `Consulta (general):\n${message}\n\n` +
@@ -946,7 +981,7 @@ export async function POST(request: NextRequest) {
     } catch (claudeErr) {
       console.error("[API Claude] Síntesis falló, usando fallback con otros agentes:", claudeErr);
       const fallbackSystem =
-        `${DISCLAIMER_HARD_RULES}\nSintetiza en español (modo Normal Seguro): 1) Framework general (máx 12 líneas), 2) Tres preguntas esenciales para el usuario, 3) Orientación breve. No cites artículos ni plazos exactos salvo que estén en los datos. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
+        `${DISCLAIMER_HARD_RULES}\nSintetiza en español con estructura práctica: 1) Conclusión directa (3-5 líneas), 2) Base legal (solo si está en los datos), 3) Cómo proceder paso a paso, 4) Si la institución no responde, 5) Riesgos o precauciones. No inventes artículos. Tono profesional y práctico. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
       const fallbackUser = `Consulta: ${message}\n\nDatos disponibles:\n${results.filter((r) => r.ok).map((r) => `${r.agent}:\n${truncate(r.content, 3000)}`).join("\n\n")}`;
       let fallbackContent = "";
       if (openaiKey) {
