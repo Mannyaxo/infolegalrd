@@ -85,6 +85,44 @@ function normalizeText(s: string): string {
   return s.replace(/\s+/g, " ").trim();
 }
 
+/** Normaliza query para dedup: trim, lowercase, colapsar espacios. */
+function normalizeQueryForDedup(q: string): string {
+  return q.trim().toLowerCase().replace(/\s+/g, " ");
+}
+
+/**
+ * Encola en corpus_enrichment_queue cuando no hay evidencia (chunks = 0).
+ * No inserta si ya existe una fila reciente (24h) con status no finalizado y query igual o muy similar.
+ * No bloquea: si supabase es null o falla la escritura, no afecta la respuesta.
+ */
+async function enqueueNoEvidence(
+  supabase: ReturnType<typeof getSupabaseServer>,
+  query: string,
+  mode: "normal" | "max-reliability"
+): Promise<void> {
+  if (!supabase || !query) return;
+  const normalized = normalizeQueryForDedup(query);
+  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
+  try {
+    const client = supabase as unknown as {
+      from: (t: string) => {
+        select: (c: string) => { gte: (col: string, val: string) => { in: (col: string, val: string[]) => Promise<{ data: { query: string }[] | null }> } };
+        insert: (r: object) => Promise<unknown>;
+      };
+    };
+    const { data: existing } = await client
+      .from("corpus_enrichment_queue")
+      .select("id, query")
+      .gte("created_at", twentyFourHoursAgo)
+      .in("status", ["PENDING", "FETCHING", "FETCHED", "FETCHED_REVIEW", "INGESTING"]);
+    const rows = existing ?? [];
+    if (rows.some((r) => normalizeQueryForDedup(r.query) === normalized)) return;
+    await client.from("corpus_enrichment_queue").insert({ query, mode, status: "PENDING" });
+  } catch {
+    // no bloquear respuesta
+  }
+}
+
 function truncate(s: string, max = 2500): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…`;
@@ -587,6 +625,7 @@ export async function POST(request: NextRequest) {
         } catch {
           // no bloquear
         }
+        await enqueueNoEvidence(supabase, message, "max-reliability");
         return NextResponse.json({ type: "clarify", questions: keyQuestions } satisfies ChatResponse, { status: 200 });
       }
 
@@ -894,6 +933,8 @@ export async function POST(request: NextRequest) {
         DISCLAIMER_PREFIX +
         (generalAnswer.trim() || "Orientación general no disponible.") +
         "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos. Para respuestas con base legal verificada, usa el modo **Máxima Confiabilidad** en la siguiente consulta.";
+      const supabaseNormal = getSupabaseServer();
+      await enqueueNoEvidence(supabaseNormal, message, "normal");
       return NextResponse.json({ type: "answer", content: withDisclaimer, note: undefined } satisfies ChatResponse, {
         status: 200,
       });

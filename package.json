@@ -10,7 +10,8 @@
     "ingest:constitucion": "tsx scripts/ingest_constitucion.ts",
     "ingest:manual": "tsx scripts/ingest_manual.ts",
     "crawl:consultoria": "tsx scripts/crawl_consultoria.ts",
-    "verify:rag": "tsx scripts/verify_rag_rpc.ts"
+    "verify:rag": "tsx scripts/verify_rag_rpc.ts",
+    "enrich:queue": "tsx scripts/enrich_queue.ts"
   },
   "dependencies": {
     "@supabase/supabase-js": "^2.45.0",

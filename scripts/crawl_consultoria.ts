@@ -3,7 +3,16 @@ import dotenv from "dotenv";
 import { resolve } from "path";
 import { createClient } from "@supabase/supabase-js";
 import OpenAI from "openai";
-import { createHash } from "crypto";
+import {
+  normalizeText,
+  sha256,
+  deriveCanonicalFromTitle,
+  extractPublishedDate,
+  ensureConsultoriaSourceId,
+  upsertInstrument,
+  ingestVersionAndChunks,
+  type CrawlDoc,
+} from "./_consultoria_pipeline";
 
 dotenv.config({ path: resolve(process.cwd(), ".env.local") });
 
@@ -20,63 +29,7 @@ dotenv.config({ path: resolve(process.cwd(), ".env.local") });
 const FIRECRAWL_BASE = "https://api.firecrawl.dev/v2";
 const CONSULTORIA_START = "https://www.consultoria.gov.do/consulta/";
 const CRAWL_LIMIT = 20;
-const CHUNK_SIZE = 1000;
-const CHUNK_OVERLAP = 150;
-const EMBEDDING_MODEL = "text-embedding-3-small";
 const URL_KEYWORDS = /ley|decreto|resolucion|constitucion/i;
-
-type CrawlDoc = {
-  markdown?: string;
-  metadata?: { title?: string; sourceURL?: string; url?: string; [k: string]: unknown };
-};
-
-function sha256(text: string): string {
-  return createHash("sha256").update(text, "utf8").digest("hex");
-}
-
-function normalizeText(text: string): string {
-  return text
-    .replace(/\r\n/g, "\n")
-    .replace(/\n{3,}/g, "\n\n")
-    .replace(/[ \t]+/g, " ")
-    .trim();
-}
-
-function chunkText(text: string, size: number, overlap: number): string[] {
-  const chunks: string[] = [];
-  let start = 0;
-  while (start < text.length) {
-    const end = Math.min(start + size, text.length);
-    chunks.push(text.slice(start, end));
-    start += size - overlap;
-  }
-  return chunks;
-}
-
-function deriveCanonicalFromTitle(title: string, url: string): { canonical_key: string; type: string; number: string | null } {
-  const t = title || "";
-  const ley = t.match(/(?:Ley|LEY)\s*(\d{2,3}-\d{2})/i);
-  const decreto = t.match(/Decreto\s*(\d{2,3}-\d{2})/i);
-  const resolucion = t.match(/Resoluci[oó]n\s*(\d{2,3}-\d{2})/i);
-  const constitucion = /constitucion/i.test(t) || /constitucion/i.test(url);
-  if (constitucion) return { canonical_key: "CONSTITUCION-RD", type: "constitucion", number: null };
-  if (decreto) return { canonical_key: `DECRETO-${decreto[1]}`, type: "decreto", number: decreto[1] };
-  if (resolucion) return { canonical_key: `RESOLUCION-${resolucion[1]}`, type: "resolucion", number: resolucion[1] };
-  if (ley) return { canonical_key: `LEY-${ley[1]}`, type: "ley", number: ley[1] };
-  const fallback = t.slice(0, 60).replace(/\s+/g, "-").replace(/[^a-zA-Z0-9-]/g, "") || "CONSULTORIA";
-  return { canonical_key: fallback.toUpperCase(), type: "ley", number: null };
-}
-
-function extractPublishedDate(markdown: string, metadata: CrawlDoc["metadata"]): string | null {
-  const today = new Date().toISOString().slice(0, 10);
-  const text = (markdown || "") + " " + (metadata?.description || "");
-  const yyyy = text.match(/(\d{4})/g);
-  if (yyyy && yyyy.length > 0) {
-    const years = [...new Set(yyyy)].map(Number).filter((y) => y >= 1990 && y <= 2030);
-    if (years.length > 0) return `${Math.max(...years)}-01-01`;
-  }
-  return today;
-}
 
 async function startCrawl(apiKey: string): Promise<string> {
   const res = await fetch(`${FIRECRAWL_BASE}/crawl`, {
@@ -157,23 +110,7 @@ async function main() {
   const supabase = createClient(supabaseUrl, serviceKey);
   const openai = new OpenAI({ apiKey: openaiKey });
 
-  let sourceId: string | null = null;
-  const { data: existingSource } = await supabase
-    .from("sources")
-    .select("id")
-    .eq("name", "ConsultoriaGovDo")
-    .eq("base_url", "https://www.consultoria.gov.do/")
-    .maybeSingle();
-  if (existingSource?.id) {
-    sourceId = existingSource.id;
-  } else {
-    const { data: inserted } = await supabase
-      .from("sources")
-      .insert({ name: "ConsultoriaGovDo", base_url: "https://www.consultoria.gov.do/" })
-      .select("id")
-      .single();
-    sourceId = inserted?.id ?? null;
-  }
+  const sourceId = await ensureConsultoriaSourceId(supabase);
   if (!sourceId) {
     console.error("No se pudo crear/obtener source ConsultoriaGovDo");
     process.exit(1);
@@ -191,76 +128,34 @@ async function main() {
     }
     const contentHash = sha256(contentText);
     const { canonical_key, type, number } = deriveCanonicalFromTitle(title, url);
-    const published = extractPublishedDate(rawMarkdown, doc.metadata);
+    const published = extractPublishedDate(rawMarkdown, doc.metadata) ?? new Date().toISOString().slice(0, 10);
 
-    let instrumentId: string | null = null;
-    const { data: inst } = await supabase.from("instruments").select("id").eq("canonical_key", canonical_key).maybeSingle();
-    if (inst?.id) {
-      instrumentId = inst.id;
-      await supabase.from("instruments").update({ title, type, number: number ?? undefined }).eq("id", instrumentId);
-    } else {
-      const { data: inserted } = await supabase
-        .from("instruments")
-        .insert({ canonical_key, title, type, number: number ?? undefined })
-        .select("id")
-        .single();
-      instrumentId = inserted?.id ?? null;
-    }
-    if (!instrumentId) {
-      console.warn("   No se pudo crear instrument:", canonical_key);
+    const upsert = await upsertInstrument(supabase, canonical_key, title, type, number);
+    if ("error" in upsert) {
+      console.warn("   No se pudo crear instrument:", canonical_key, upsert.error);
       continue;
     }
+    const instrumentId = upsert.instrumentId;
 
-    const { data: existingVersion } = await supabase
-      .from("instrument_versions")
-      .select("id")
-      .eq("instrument_id", instrumentId)
-      .eq("content_hash", contentHash)
-      .maybeSingle();
-    let versionId: string;
-    if (existingVersion?.id) {
-      console.log("   [" + (idx + 1) + "]", canonical_key, "→ misma versión (hash igual), skip");
+    const result = await ingestVersionAndChunks(supabase, openai, {
+      instrumentId,
+      sourceId,
+      sourceUrl: url,
+      contentText,
+      contentHash,
+      publishedDate: published,
+      canonicalKey: canonical_key,
+    });
+
+    if (!result.ok) {
+      if ("skipped" in result && result.skipped === "dedup-by-hash") {
+        console.log("   [" + (idx + 1) + "]", canonical_key, "→ misma versión (hash igual), skip");
+      } else {
+        console.warn("   Error insertando versión:", canonical_key, "error" in result ? result.error : "");
+      }
       continue;
     }
-
-    await supabase
-      .from("instrument_versions")
-      .update({ status: "DEROGADA" })
-      .eq("instrument_id", instrumentId)
-      .eq("status", "VIGENTE");
-    const { data: newVersion, error: verErr } = await supabase
-      .from("instrument_versions")
-      .insert({
-        instrument_id: instrumentId,
-        source_id: sourceId,
-        published_date: published,
-        effective_date: null,
-        status: "VIGENTE",
-        source_url: url,
-        gazette_ref: null,
-        content_text: contentText,
-        content_hash: contentHash,
-      })
-      .select("id")
-      .single();
-    if (verErr || !newVersion?.id) {
-      console.warn("   Error insertando versión:", canonical_key, verErr?.message);
-      continue;
-    }
-    versionId = newVersion.id;
-
-    const chunks = chunkText(contentText, CHUNK_SIZE, CHUNK_OVERLAP);
-    for (let i = 0; i < chunks.length; i++) {
-      const embRes = await openai.embeddings.create({ model: EMBEDDING_MODEL, input: chunks[i].slice(0, 8000) });
-      const embedding = embRes.data[0]?.embedding ?? [];
-      await supabase.from("instrument_chunks").insert({
-        instrument_version_id: versionId,
-        chunk_index: i,
-        chunk_text: chunks[i],
-        embedding,
-      });
-    }
-    console.log("   [" + (idx + 1) + "]", canonical_key, "→ nueva versión", versionId, "(", chunks.length, "chunks )");
+    console.log("   [" + (idx + 1) + "]", canonical_key, "→ nueva versión", result.versionId, "(", result.chunksCount, "chunks )");
   }
 
   console.log("Listo. Procesados", filtered.length, "documentos.");
