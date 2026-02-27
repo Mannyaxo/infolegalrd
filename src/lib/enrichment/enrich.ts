@@ -1,10 +1,11 @@
 /**
- * Auto-enriquecimiento: búsqueda en fuentes oficiales (.gob.do) y verificación con múltiples IAs.
+ * Auto-enriquecimiento: búsqueda en fuentes oficiales (.gov.do y .gob.do) y verificación con múltiples IAs.
  * Solo dominios oficiales; sin verificación multi-IA no se ingiere.
  */
 
 const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v1/search";
-const OFFICIAL_DOMAIN_SUFFIX = ".gob.do";
+/** Consultoría Jurídica es .gov.do; Gaceta Oficial es .gob.do. Aceptamos ambos. */
+const OFFICIAL_DOMAIN_SUFFIXES = [".gov.do", ".gob.do"];
 const MIN_CONTENT_LENGTH = 200;
 const MAX_TEXT_FOR_VERIFY = 12000;
 
@@ -15,7 +16,7 @@ export type SearchResult = {
 };
 
 /**
- * Busca en consultoria.gov.do y gacetaoficial.gob.do (solo dominios .gob.do).
+ * Busca en consultoria.gov.do y gacetaoficial.gob.do (solo dominios .gov.do y .gob.do).
  * Respeta rate: una búsqueda por llamada. Devuelve el primer resultado con contenido suficiente.
  */
 export async function searchAndDownloadLaw(
@@ -48,7 +49,7 @@ export async function searchAndDownloadLaw(
 
   for (const d of data.data) {
     const url = (d.url ?? "").trim();
-    if (!url || !url.toLowerCase().endsWith(OFFICIAL_DOMAIN_SUFFIX)) continue;
+    if (!url || !OFFICIAL_DOMAIN_SUFFIXES.some((s) => url.toLowerCase().endsWith(s))) continue;
     const markdown = (d.markdown ?? "").trim();
     if (markdown.length < MIN_CONTENT_LENGTH) continue;
     return {
