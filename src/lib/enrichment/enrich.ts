@@ -4,9 +4,18 @@
  */
 
 const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v1/search";
-/** Consultoría Jurídica es .gov.do; Gaceta Oficial es .gob.do. Aceptamos ambos. */
+/** Consultoría Jurídica es .gov.do; Gaceta Oficial es .gob.do. Aceptamos ambos (por hostname, no por final de URL). */
 const OFFICIAL_DOMAIN_SUFFIXES = [".gov.do", ".gob.do"];
 const MIN_CONTENT_LENGTH = 200;
+
+function isOfficialDomain(url: string): boolean {
+  try {
+    const host = new URL(url).hostname.toLowerCase();
+    return OFFICIAL_DOMAIN_SUFFIXES.some((s) => host.endsWith(s));
+  } catch {
+    return false;
+  }
+}
 const MAX_TEXT_FOR_VERIFY = 12000;
 
 export type SearchResult = {
@@ -49,7 +58,7 @@ export async function searchAndDownloadLaw(
 
   for (const d of data.data) {
     const url = (d.url ?? "").trim();
-    if (!url || !OFFICIAL_DOMAIN_SUFFIXES.some((s) => url.toLowerCase().endsWith(s))) continue;
+    if (!url || !isOfficialDomain(url)) continue;
     const markdown = (d.markdown ?? "").trim();
     if (markdown.length < MIN_CONTENT_LENGTH) continue;
     return {
