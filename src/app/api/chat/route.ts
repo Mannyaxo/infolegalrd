@@ -521,9 +521,7 @@ function stripUnverifiedArticlesAndAddCaveat(answerText: string, allChunkText: s
   const unverified = getUnverifiedArticleMentions(answerText, allChunkText);
   if (unverified.length === 0) return { cleaned: answerText, caveat: "" };
   const caveat =
-    "Los siguientes artículos no pudieron verificarse en las fuentes oficiales cargadas: " +
-    unverified.join(", ") +
-    ".";
+    "No verificado en fuentes cargadas: " + unverified.join(", ") + ".";
   const unverifiedLower = unverified.map((u) => u.toLowerCase());
   const sentences = answerText.split(/(?<=[.!?])\s+/);
   const kept = sentences.filter((s) => {
@@ -590,7 +588,7 @@ export async function POST(request: NextRequest) {
     }
     const ragContext = formatVigenteContext(chunks);
     const ragBlock = ragContext.text
-      ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
+      ? `\n\nContexto oficial verificado (solo puedes citar esto):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
       : "";
 
     console.log("[chat] rawMode=", rawMode, "modeNorm=", modeNorm, "isMax=", isMax);
@@ -601,13 +599,14 @@ export async function POST(request: NextRequest) {
       const supabase = getSupabaseServer();
       const retrievedChunks = chunks;
 
-      // CAPA 1: Sin chunks — clarify con preguntas prácticas (no identificables)
+      // CAPA 1: Sin chunks — NEED_MORE_INFO con 3–4 preguntas clave (máx 4)
       if (retrievedChunks.length === 0) {
         const keyQuestions = [
           "¿La exigencia está por escrito (circular/correo) o solo verbal?",
           "¿Te han indicado alguna consecuencia o sanción si no reportas?",
           "¿Esto ocurre en días libres, vacaciones o ambas?",
-        ];
+          "¿Tienes documentación (contrato, comunicaciones) que pueda ser relevante?",
+        ].slice(0, 4);
         try {
           if (supabase) {
             await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
@@ -666,7 +665,7 @@ export async function POST(request: NextRequest) {
       const maxReliabilityUser =
         `Consulta del usuario:\n${message}\n\n` +
         (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-        `CONTEXTO (instrumentos vigentes — solo puedes citar esto):\n${contextText}\n\n` +
+        `Contexto oficial verificado (solo puedes citar esto):\n${contextText}\n\n` +
         `Responde ÚNICAMENTE con el JSON del schema anterior.`;
 
       const MAX_RELIABILITY_AGENT_TIMEOUT_MS = 25000;
@@ -866,7 +865,7 @@ export async function POST(request: NextRequest) {
       let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
       if (fuentesToShow.length > 0) {
         const fuentesLines = fuentesToShow.map(
-          (c) => `- ${c.title} | ${c.published_date} | ${c.status} | ${c.source_url}`
+          (c) => `- ${c.title} | ${c.published_date ?? ""} | ${c.status} | ${c.source_url}`
         );
         answerWithDisclaimer += `\n\n---\n**Fuentes:**\n${fuentesLines.join("\n")}`;
       }
@@ -932,7 +931,7 @@ export async function POST(request: NextRequest) {
       const withDisclaimer =
         DISCLAIMER_PREFIX +
         (generalAnswer.trim() || "Orientación general no disponible.") +
-        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos. Para respuestas con base legal verificada, usa el modo **Máxima Confiabilidad** en la siguiente consulta.";
+        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos. Verifique en gacetaoficial.gob.do, tc.gob.do, map.gob.do.";
       const supabaseNormal = getSupabaseServer();
       await enqueueNoEvidence(supabaseNormal, message, "normal");
       return NextResponse.json({ type: "answer", content: withDisclaimer, note: undefined } satisfies ChatResponse, {
@@ -1138,16 +1137,21 @@ export async function POST(request: NextRequest) {
       `${DISCLAIMER_HARD_RULES}\n` +
       `Eres el juez/sintetizador final. Produce una respuesta orientada a la acción práctica sobre derecho dominicano, clara y estructurada.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
-      `REGLA ANTI-ALUCINACIÓN: NUNCA cites números de artículo ni plazos exactos a menos que aparezcan textualmente en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado, escribe en términos generales o indica "consulte la Gaceta Oficial". No inventes artículos ni procedimientos.\n\n` +
+      `REGLA ANTI-ALUCINACIÓN: NUNCA cites números de artículo ni plazos exactos a menos que aparezcan textualmente en el "Contexto oficial verificado" o en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado, escribe en términos generales o indica "consulte la Gaceta Oficial". No inventes artículos ni procedimientos.\n\n` +
       `Estructura OBLIGATORIA de tu salida (asistente jurídico práctico para ciudadanos):\n` +
       `${RAG_RESPONSE_STRUCTURE}\n` +
       `Al final de la respuesta, añade en negrita la advertencia:\n**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
       `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.`;
 
+    const judgeContextBlock =
+      chunks.length > 0 && ragContext.text
+        ? `Contexto oficial verificado (solo puedes citar esto):\n${truncate(ragContext.text, 6000)}\n\n`
+        : "";
     const judgeUser =
       `Consulta (general):\n${message}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-      `Resultados de agentes y búsqueda (pueden contener errores; verifica citas con "Búsqueda fuentes RD" si está disponible y sintetiza):\n\n` +
+      judgeContextBlock +
+      `Resultados de agentes y búsqueda (pueden contener errores; verifica citas con el contexto oficial o "Búsqueda fuentes RD" si está disponible y sintetiza):\n\n` +
       results
         .map((r) =>
           r.ok
@@ -1262,9 +1266,9 @@ export async function POST(request: NextRequest) {
 
     if (chunks.length > 0 && ragContext.citations.length > 0) {
       const fuentesLines = ragContext.citations.map(
-        (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
+        (c) => `- ${c.title} | ${c.published_date ?? ""} | ${c.status} | ${c.source_url}`
       );
-      final += `\n\n---\n**Fuentes (Citations):**\n${fuentesLines.join("\n")}`;
+      final += `\n\n---\n**Fuentes:**\n${fuentesLines.join("\n")}`;
     }
     final = DISCLAIMER_PREFIX + final;
 
