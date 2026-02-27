@@ -24,38 +24,25 @@ const DISCLAIMER_HARD_RULES = `Eres un asistente informativo sobre derecho de Re
 
 Reglas estrictas:
 - No des asesoría legal personalizada, no “diagnostiques” casos reales, no pidas ni uses datos personales identificables.
-- Si la consulta es personal (\"¿qué debo hacer?\", \"en mi caso\"), responde pidiendo reformular de forma hipotética/general.
+- Si es muy personal y ambigua, pregunta datos genéricos sin pedir reformulación obligatoria; da pasos generales y disclaimer.
 - Siempre escribe en español, con precisión y prudencia.
 `;
 
 /** Estructura obligatoria de respuesta RAG: asistente jurídico práctico para ciudadanos. */
 const RAG_RESPONSE_STRUCTURE = `
-ESTRUCTURA OBLIGATORIA DE RESPUESTA (respeta siempre este orden):
+ESTRUCTURA OBLIGATORIA (respeta este orden; salida compacta):
 
-1️⃣ CONCLUSIÓN DIRECTA
-- Respuesta clara en 3–5 líneas.
-- Indica si la situación parece legal, irregular o posiblemente abusiva.
+1️⃣ CONCLUSIÓN DIRECTA — 3–4 líneas máximo. Indica si parece legal, irregular o posiblemente abusiva.
 
-2️⃣ BASE LEGAL
-- Cita artículos específicos solo si aparecen en el contexto proporcionado.
-- Indica ley o Constitución y número de artículo cuando esté disponible.
-- Si no hay base suficiente en el contexto, dilo claramente (ej. "No consta en las fuentes cargadas").
+2️⃣ BASE LEGAL — Cita solo artículos que aparezcan en el contexto. Si no hay base suficiente, dilo en una línea.
 
-3️⃣ CÓMO PROCEDER (PASO A PASO)
-- Paso 1, Paso 2, Paso 3...
-- Indica documentos o acciones concretas cuando el contexto lo permita.
+3️⃣ CÓMO PROCEDER — Lista numerada 1–5 (pasos concretos: ej. "Solicita por escrito la base normativa", "Conserva correos/documentos", "Consulta abogado si aplica").
 
-4️⃣ SI LA INSTITUCIÓN NO RESPONDE
-- Vías administrativas, recursos disponibles, instancias competentes (solo si aplica y hay base en el contexto).
+4️⃣ SI LA INSTITUCIÓN NO RESPONDE — 1–3 líneas si aplica (vías administrativas/recursos).
 
-5️⃣ RIESGOS O PRECAUCIONES
-- Advertencias prácticas y qué no hacer.
+5️⃣ RIESGOS O PRECAUCIONES — Máx 5 bullets. Caveats y next_steps: máx 5 bullets cada uno.
 
-REGLAS DE REDACCIÓN:
-- No inventes artículos ni procedimientos. Solo cita lo que esté en el contexto/metadatos.
-- Tono profesional, firme y práctico. Evita lenguaje excesivamente académico.
-- Prioriza normas de mayor jerarquía: Constitución > Ley > Decreto.
-- Si falta información para una sección, indica "No hay información suficiente en las fuentes cargadas" en esa parte.
+REGLAS: No inventes artículos. Solo cita lo del contexto. Tono profesional y práctico. Prioriza Constitución > Ley > Decreto.
 `;
 
 const BUSQUEDA_PROMPT = (tema: string) =>
@@ -644,23 +631,18 @@ export async function POST(request: NextRequest) {
       const { contextText, allChunkText } = formatMaxReliabilityContext(mrChunks, MR_MAX_CTX_CHARS);
       const allowedSourceUrls = new Set(mrChunks.map((c) => (c.citation.source_url ?? "").trim()).filter(Boolean));
 
-      // CAPA 2: Prompt restrictivo — salida JSON estricta + estructura práctica de respuesta
+      // CAPA 2: Prompt restrictivo — salida JSON estricta + estructura práctica y compacta
       const maxReliabilitySystem =
         `${DISCLAIMER_HARD_RULES}\n` +
         `Usa SOLO el CONTEXTO OFICIAL VERIFICADO. Cita artículos SOLO si aparecen literalmente en chunk_text. Usa las citations proporcionadas para referencias.\n\n` +
+        `Si hay chunks relevantes (laboral, función pública, vacaciones, etc.) → da 2–3 pasos iniciales prácticos aunque falte info completa (ej. "Solicita por escrito la base normativa", "Conserva correos", "Consulta abogado"). No pidas reformulación obligatoria en consultas personales.\n\n` +
         `Modo MÁXIMA CONFIABILIDAD. Reglas estrictas:\n` +
-        `- SOLO puedes usar información presente en el CONTEXTO proporcionado.\n` +
-        `- Está PROHIBIDO inventar números de artículos, nombres de leyes, fechas o citas.\n` +
-        `- Si el número de artículo NO aparece literalmente en el contexto, NO lo menciones.\n` +
-        `- Cada afirmación jurídica relevante debe tener al menos una cita del contexto.\n` +
-        `- Si la evidencia es insuficiente o ambigua, devuelve NEED_MORE_INFO y preguntas concretas en missing_info_questions.\n` +
-        `El campo "answer" DEBE seguir esta estructura (asistente jurídico práctico):\n` +
-        `1) CONCLUSIÓN DIRECTA (3–5 líneas; indicar si parece legal, irregular o posiblemente abusivo).\n` +
-        `2) BASE LEGAL (citar solo artículos que aparezcan en el contexto; ley/Constitución y número).\n` +
-        `3) CÓMO PROCEDER (paso a paso; documentos o acciones concretas).\n` +
-        `4) SI LA INSTITUCIÓN NO RESPONDE (vías administrativas, recursos, instancias competentes si aplica).\n` +
-        `5) RIESGOS O PRECAUCIONES (advertencias prácticas, qué no hacer).\n` +
-        `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.\n` +
+        `- SOLO información presente en el CONTEXTO. PROHIBIDO inventar artículos, leyes, fechas o citas.\n` +
+        `- Si el artículo NO aparece literalmente en el contexto, NO lo menciones.\n` +
+        `- missing_info_questions: máximo 4 preguntas concretas (ej. "¿La exigencia está por escrito o solo verbal?"). Si hay contexto útil, da pasos aunque falte info y devuelve APPROVE con caveats si aplica.\n` +
+        `El campo "answer" DEBE ser compacto: conclusión 3–4 líneas; pasos numerados 1–5; caveats y next_steps máx 5 bullets cada uno.\n` +
+        `Estructura: 1) Conclusión directa (3–4 líneas). 2) Base legal (solo si está en contexto). 3) Cómo proceder (lista 1–5). 4) Si la institución no responde. 5) Riesgos o precauciones.\n` +
+        `Tono profesional y práctico. Prioriza Constitución > Ley > Decreto.\n` +
         `Tu salida DEBE ser ÚNICAMENTE un JSON válido, sin texto antes ni después. Schema exacto:\n` +
         `{\n` +
         `  "decision": "APPROVE" | "NEED_MORE_INFO" | "NO_EVIDENCE",\n` +
@@ -671,7 +653,7 @@ export async function POST(request: NextRequest) {
         `  "next_steps": string[],\n` +
         `  "citations": [{"instrument": string, "type": string, "number": string|null, "published_date": string, "status": string, "source_url": string, "chunk_index": number}]\n` +
         `}\n` +
-        `Las citations SOLO pueden ser de los chunks del contexto (mismo instrument/title, source_url y chunk_index que aparecen en el contexto).`;
+        `missing_info_questions: máx 4. caveats y next_steps: máx 5 items cada uno. Las citations SOLO de los chunks del contexto.`;
 
       const maxReliabilityUser =
         `Consulta del usuario:\n${effectiveMessage}\n\n` +
@@ -795,9 +777,9 @@ export async function POST(request: NextRequest) {
         : "NO_EVIDENCE";
       let confidence = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
       let answer = typeof parsed.answer === "string" ? parsed.answer : "";
-      let missingInfo = Array.isArray(parsed.missing_info_questions) ? parsed.missing_info_questions.filter((q) => typeof q === "string") : [];
-      let caveats = Array.isArray(parsed.caveats) ? parsed.caveats.filter((c) => typeof c === "string") : [];
-      let nextSteps = Array.isArray(parsed.next_steps) ? parsed.next_steps.filter((s) => typeof s === "string") : [];
+      let missingInfo = Array.isArray(parsed.missing_info_questions) ? parsed.missing_info_questions.filter((q) => typeof q === "string").slice(0, 4) : [];
+      let caveats = Array.isArray(parsed.caveats) ? parsed.caveats.filter((c) => typeof c === "string").slice(0, 5) : [];
+      let nextSteps = Array.isArray(parsed.next_steps) ? parsed.next_steps.filter((s) => typeof s === "string").slice(0, 5) : [];
       let citations: MaxReliabilityCitation[] = Array.isArray(parsed.citations)
         ? (parsed.citations as unknown[]).filter(
             (c): c is MaxReliabilityCitation =>
@@ -812,20 +794,19 @@ export async function POST(request: NextRequest) {
       // Citations reales: solo source_url presentes en chunks
       citations = citations.filter((c) => allowedSourceUrls.has((c.source_url ?? "").trim()));
 
-      // Si el juez devolvió NEED_MORE_INFO → type "clarify" (no "answer")
+      // Si el juez devolvió NEED_MORE_INFO → type "clarify" (no "answer"); máx 4 preguntas concretas
       if (decision === "NEED_MORE_INFO") {
+        const clarifyQuestions =
+          missingInfo.length > 0
+            ? missingInfo
+            : [
+                "¿La exigencia está por escrito (circular/correo) o solo verbal?",
+                "¿Te han indicado sanciones si no cumples?",
+                "¿Aplica en días libres, vacaciones o ambos?",
+                "¿Tienes documentación (contrato, comunicaciones) que pueda ser relevante?",
+              ];
         return NextResponse.json(
-          {
-            type: "clarify",
-            questions:
-              missingInfo.length > 0
-                ? missingInfo.slice(0, 3)
-                : [
-                    "¿La exigencia está por escrito o solo verbal?",
-                    "¿Te han indicado sanciones si no cumples?",
-                    "¿Aplica en días libres, vacaciones o ambos?",
-                  ],
-          } satisfies ChatResponse,
+          { type: "clarify", questions: clarifyQuestions.slice(0, 4) } satisfies ChatResponse,
           { status: 200 }
         );
       }
@@ -932,22 +913,22 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(payload, { status: 200 });
     }
 
-    // Modo normal sin chunks: orientación práctica conservadora (5 bullets) + recomendar Máxima Confiabilidad
+    // Modo normal sin chunks: pasos generales útiles + disclaimer; no pedir reformulación obligatoria
     if (chunks.length === 0) {
       const generalPrompt =
-        `${DISCLAIMER_HARD_RULES}\nResponde con orientación práctica conservadora sobre derecho dominicano. NO pidas reformular en hipotético como requisito. NO cites artículos ni números de ley (no hay fuentes cargadas). Da 5 bullets concretos y prácticos que un ciudadano pueda seguir, sin datos personales. Tono profesional y directo.`;
+        `${DISCLAIMER_HARD_RULES}\nResponde con orientación práctica conservadora sobre derecho dominicano. NO pidas reformulación obligatoria. NO cites artículos ni números de ley (no hay fuentes cargadas). Da una lista numerada 1–5 de pasos concretos (ej. Solicita por escrito la base normativa, Conserva documentos/correos, Consulta abogado si aplica). Sin datos personales. Tono profesional y directo.`;
       let generalAnswer = "";
       try {
         generalAnswer = await callClaudeWithFallback({
           apiKey: anthropicKey,
           system: generalPrompt,
-          user: `Consulta: ${effectiveMessage}\n\nResponde en 5 bullets (acciones o recomendaciones prácticas).`,
+          user: `Consulta: ${effectiveMessage}\n\nResponde con lista numerada 1–5 de pasos prácticos (solicitar por escrito, conservar documentos, consultar abogado si aplica, etc.).`,
           max_tokens: 500,
           temperature: 0.2,
         });
       } catch {
         generalAnswer =
-          "• Consulta con un abogado colegiado para tu caso concreto.\n• Revisa el área legal que aplique (laboral, administrativo, etc.).\n• Conserva cualquier comunicación por escrito.\n• No firmes nada bajo presión sin asesoría.\n• Documenta fechas y hechos de forma objetiva.";
+          "1. Solicita por escrito la base normativa que exigen.\n2. Conserva correos, circulares o comunicaciones.\n3. Consulta con un abogado colegiado para tu caso concreto.\n4. No firmes nada bajo presión sin asesoría.\n5. Documenta fechas y hechos de forma objetiva.";
       }
       const withDisclaimer =
         DISCLAIMER_PREFIX +
@@ -1153,17 +1134,16 @@ export async function POST(request: NextRequest) {
       `Resumen consulta: Agentes OK: ${successCount}/5 | Fallidos: ${failCount} | Modelos usados: ${usedModels.join(", ")}`
     );
 
-    // D) Síntesis final con Claude (juez) — Modo "Normal Seguro" — Estructura práctica
+    // D) Síntesis final con Claude (juez) — Modo "Normal Seguro" — Estructura práctica y compacta
     const judgeSystem =
       `${DISCLAIMER_HARD_RULES}\n` +
       `Usa SOLO el "Contexto oficial verificado". No cites artículos que no aparezcan en ese contexto.\n\n` +
-      `Eres el juez/sintetizador final. Produce una respuesta orientada a la acción práctica sobre derecho dominicano, clara y estructurada.\n` +
+      `Eres el juez/sintetizador final. Respuesta compacta: conclusión 3–4 líneas; pasos numerados 1–5; caveats/next_steps máx 5 bullets cada uno. No pidas reformulación obligatoria.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
       `REGLA ANTI-ALUCINACIÓN: NUNCA cites números de artículo ni plazos exactos a menos que aparezcan textualmente en el "Contexto oficial verificado" o en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado, escribe en términos generales o indica "consulte la Gaceta Oficial". No inventes artículos ni procedimientos.\n\n` +
-      `Estructura OBLIGATORIA de tu salida (asistente jurídico práctico para ciudadanos):\n` +
-      `${RAG_RESPONSE_STRUCTURE}\n` +
-      `Al final de la respuesta, añade en negrita la advertencia:\n**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
-      `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.`;
+      `Estructura OBLIGATORIA:\n${RAG_RESPONSE_STRUCTURE}\n` +
+      `Al final, añade en negrita la advertencia:\n**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
+      `Tono profesional, firme y práctico. Prioriza Constitución > Ley > Decreto.`;
 
     const judgeUser =
       `Consulta (general):\n${effectiveMessage}\n\n` +
@@ -1197,7 +1177,7 @@ export async function POST(request: NextRequest) {
     } catch (claudeErr) {
       console.error("[API Claude] Síntesis falló, usando fallback con otros agentes:", claudeErr);
       const fallbackSystem =
-        `${DISCLAIMER_HARD_RULES}\nSintetiza en español con estructura práctica: 1) Conclusión directa (3-5 líneas), 2) Base legal (solo si está en los datos), 3) Cómo proceder paso a paso, 4) Si la institución no responde, 5) Riesgos o precauciones. No inventes artículos. Tono profesional y práctico. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
+        `${DISCLAIMER_HARD_RULES}\nSintetiza en español, compacto: conclusión 3-4 líneas; pasos numerados 1-5; base legal solo si está en los datos. No inventes artículos. Tono profesional y práctico. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
       const fallbackUser = `Consulta: ${effectiveMessage}\n\nDatos disponibles:\n${results.filter((r) => r.ok).map((r) => `${r.agent}:\n${truncate(r.content, 3000)}`).join("\n\n")}`;
       let fallbackContent = "";
       if (openaiKey) {
