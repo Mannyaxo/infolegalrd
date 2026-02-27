@@ -559,6 +559,23 @@ export async function POST(request: NextRequest) {
           "No tengo esta norma completa en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Vuelve a preguntar en 5–10 minutos.",
       });
     }
+
+    const askedLaw = message.match(/ley\s*(\d{2,3}-\d{2})/i);
+    const askedCanonical = askedLaw ? `LEY-${askedLaw[1]}` : null;
+    const hasTheExactLaw = chunks.some(
+      (c) =>
+        c.citation.canonical_key === askedCanonical ||
+        c.chunk_text.toLowerCase().includes("ley " + (askedLaw ? askedLaw[1] : ""))
+    );
+    if (askedCanonical && !hasTheExactLaw) {
+      console.log("[DEBUG] Detectada ley faltante:", askedCanonical);
+      await enqueueForEnrichment(message, isMax ? "max-reliability" : "normal");
+      return NextResponse.json({
+        type: "answer",
+        content: `No tengo la Ley ${askedLaw ? askedLaw[1] : ""} completa en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Vuelve a preguntar en 5–10 minutos.`,
+      });
+    }
+
     const ragContext = formatVigenteContext(chunks);
     const ragText = ragContext.text || "(No hay fuentes vigentes cargadas)";
     const ragCitations = ragContext.citations;
