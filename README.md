@@ -49,6 +49,7 @@ Ver **[DEPLOY.md](./DEPLOY.md)** para:
 
 - **`.env.local`** solo se usa en desarrollo local; Vercel **no** lo lee.
 - En Vercel: **Project → Settings → Environment Variables** define las variables para **Production**, **Preview** y/o **Development**.
+- **RAG (consultas con base legal):** debe estar configurada **SUPABASE_SERVICE_ROLE_KEY** en el entorno (Vercel). Si falta, el backend no puede ejecutar `match_vigente_chunks` y las consultas devolverán "sin fuentes". Configure esta variable en Production / Preview / Development.
 - Después de añadir o cambiar variables en Vercel, hay que **Redeploy** (Deployments → Redeploy) o hacer **push** de un nuevo commit para que se apliquen.
 - Para comprobar que las variables están disponibles en producción, abre **`https://tu-dominio.vercel.app/api/env-check`** y revisa que los valores `env.*` sean `true` (no se muestran secretos, solo si están definidos y el host de Supabase).
 

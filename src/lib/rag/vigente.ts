@@ -56,12 +56,17 @@ export async function retrieveVigenteChunksWithEmbedding(
 ): Promise<VigenteChunk[]> {
   if (embedding.length === 0) return [];
 
-  const { data: rows, error } = await (supabase as unknown as { rpc(n: string, p: object): Promise<{ data: MatchVigenteRow[] | null; error: Error | null }> }).rpc(
+  const { data: rows, error } = await (supabase as unknown as { rpc(n: string, p: object): Promise<{ data: MatchVigenteRow[] | null; error: { message?: string; details?: string } | null }> }).rpc(
     "match_vigente_chunks",
     { query_embedding: embedding, match_count: topK }
   );
 
-  if (error || !Array.isArray(rows)) return [];
+  if (error) {
+    const errMsg = error?.message ?? (typeof error === "string" ? error : JSON.stringify(error));
+    console.error("[RAG] match_vigente_chunks RPC error:", errMsg, error?.details ?? "");
+    throw new Error(errMsg);
+  }
+  if (!Array.isArray(rows)) return [];
 
   return rows.map((row) => ({
     chunk_text: row.chunk_text,

@@ -502,10 +502,12 @@ export async function POST(request: NextRequest) {
 
     // RAG obligatorio en ambos modos (match_vigente_chunks, topK=8)
     let chunks: VigenteChunk[] = [];
+    let ragError: Error | null = null;
     try {
       chunks = await retrieveVigenteChunks(message, RAG_TOP_K);
-    } catch {
-      // RAG no disponible o sin embeddings
+    } catch (e) {
+      ragError = e instanceof Error ? e : new Error(String(e));
+      console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
     }
     const ragContext = formatVigenteContext(chunks);
     const ragBlock = ragContext.text
@@ -517,12 +519,12 @@ export async function POST(request: NextRequest) {
       const supabase = getSupabaseServer();
       const retrievedChunks = chunks;
 
-      // CAPA 1: Sin chunks — NEED_MORE_INFO + preguntas clave (clarify)
+      // CAPA 1: Sin chunks — clarify con preguntas prácticas (no identificables)
       if (retrievedChunks.length === 0) {
         const keyQuestions = [
-          "¿Qué tipo de norma busca (ley, reglamento, constitución, resolución)?",
-          "¿Sabe el nombre o número de la ley o el año de publicación?",
-          "¿Qué entidad emitió la norma (Congreso, ministerio, junta)?",
+          "¿La exigencia está por escrito (circular/correo) o solo verbal?",
+          "¿Te han indicado alguna consecuencia o sanción si no reportas?",
+          "¿Esto ocurre en días libres, vacaciones o ambas?",
         ];
         try {
           if (supabase) {
@@ -533,7 +535,7 @@ export async function POST(request: NextRequest) {
               decision: "NO_EVIDENCE",
               confidence: 0.95,
               citations: [],
-              model_used: { reason: "no_chunks" },
+              model_used: { reason: "no_chunks", details: ragError?.message ?? "rpc_returned_empty" },
               tokens_in: null,
               tokens_out: null,
             });
@@ -721,26 +723,27 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(payload, { status: 200 });
     }
 
-    // Modo normal sin chunks: respuesta general + disclaimer (no citar artículos)
+    // Modo normal sin chunks: orientación práctica conservadora (5 bullets) + recomendar Máxima Confiabilidad
     if (chunks.length === 0) {
       const generalPrompt =
-        `${DISCLAIMER_HARD_RULES}\nResponde de forma breve y general sobre derecho dominicano a la siguiente consulta. No cites artículos ni leyes concretas; solo orientación general en 2-4 líneas.`;
+        `${DISCLAIMER_HARD_RULES}\nResponde con orientación práctica conservadora sobre derecho dominicano. NO pidas reformular en hipotético como requisito. NO cites artículos ni números de ley (no hay fuentes cargadas). Da 5 bullets concretos y prácticos que un ciudadano pueda seguir, sin datos personales. Tono profesional y directo.`;
       let generalAnswer = "";
       try {
         generalAnswer = await callClaudeWithFallback({
           apiKey: anthropicKey,
           system: generalPrompt,
-          user: `Consulta: ${message}`,
-          max_tokens: 400,
+          user: `Consulta: ${message}\n\nResponde en 5 bullets (acciones o recomendaciones prácticas).`,
+          max_tokens: 500,
           temperature: 0.2,
         });
       } catch {
-        generalAnswer = "No pude generar una orientación en este momento. Te recomiendo reformular la consulta o indicar el área legal (laboral, familia, civil, etc.) para una mejor respuesta.";
+        generalAnswer =
+          "• Consulta con un abogado colegiado para tu caso concreto.\n• Revisa el área legal que aplique (laboral, administrativo, etc.).\n• Conserva cualquier comunicación por escrito.\n• No firmes nada bajo presión sin asesoría.\n• Documenta fechas y hechos de forma objetiva.";
       }
       const withDisclaimer =
         DISCLAIMER_PREFIX +
         (generalAnswer.trim() || "Orientación general no disponible.") +
-        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos.";
+        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos. Para respuestas con base legal verificada, usa el modo **Máxima Confiabilidad** en la siguiente consulta.";
       return NextResponse.json({ type: "answer", content: withDisclaimer, note: undefined } satisfies ChatResponse, {
         status: 200,
       });
