@@ -136,9 +136,7 @@ export function Chatbot({ suggestedQuery, onSuggestionApplied }: ChatbotProps = 
     try {
       const chatMode = maxReliability ? "max-reliability" : "standard";
       const body = { message: text, history: messages.slice(-10), userId: user?.id ?? null, mode: chatMode };
-      if (typeof process !== "undefined" && process.env.NODE_ENV === "development") {
-        console.log("[Chatbot] POST /api/chat body.mode=", body.mode);
-      }
+      console.log("Enviando mode:", body.mode);
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },

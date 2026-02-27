@@ -9,12 +9,12 @@ Abrir en **Word**: Archivo → Abrir → este .md → Guardar como .docx.
 
 ## Variables de entorno (.env.local / Vercel)
 
-**Fuente de verdad para URL:** En el backend y en la app se usa únicamente `NEXT_PUBLIC_SUPABASE_URL`. La variable `SUPABASE_URL` no se usa en Vercel; solo algunos scripts locales (ingest_manual, crawl_consultoria, verify_rag_rpc) la aceptan como fallback. En Vercel configurar solo `NEXT_PUBLIC_SUPABASE_URL`.
+En **Vercel** las variables requeridas son: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY` (requerida para frontend), `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. No se usa `SUPABASE_URL` en Vercel.
 
 | Variable | Uso | Obligatorio |
 |--------|-----|-------------|
 | `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase (front y backend) | Sí |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Cliente público / auth en el **front** (navegador) | Sí (front) |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Requerida para frontend (cliente público / auth) | Sí (front) |
 | `SUPABASE_SERVICE_ROLE_KEY` | RAG, ingesta, feedback y **todo el backend** (API routes) | Sí (API/RAG) |
 | `OPENAI_API_KEY` | Embeddings (RAG) y fallbacks | Sí (chat/ingesta) |
 | `ANTHROPIC_API_KEY` | Orquestador del chat (Claude) | Sí (chat) |
@@ -23,8 +23,6 @@ Abrir en **Word**: Archivo → Abrir → este .md → Guardar como .docx.
 | `CONSTITUCION_PUBLISHED_DATE` | Fecha promulgación (ingest) | Opcional |
 
 **Importante:** El servidor (API, RAG, ingesta) usa **solo** `SUPABASE_SERVICE_ROLE_KEY`. No uses `NEXT_PUBLIC_SUPABASE_ANON_KEY` en el backend (getSupabaseServer() no la usa). Sin `SUPABASE_SERVICE_ROLE_KEY` el RAG devuelve vacío y getSupabaseServer() retorna null.
-
-En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
 
 ---
 
@@ -70,26 +68,14 @@ En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPA
 
 ---
 
-## 0. scripts/verify_rag_rpc.ts (verificación RAG)
+### scripts/verify_rag_rpc.ts
 
-Comprueba que la función RPC `match_vigente_chunks` exista en Supabase y devuelva resultados con un embedding real (no vector de ceros).
+Verifica que:
+- exista la función `match_vigente_chunks` en Supabase
+- exista al menos un chunk vigente con embedding
+- el RPC devuelva filas usando un embedding real (no vector de ceros)
 
 **Uso:** `npm run verify:rag`
-
-**Requisitos:** `.env.local` con `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. El script carga `.env.local` y falla si falta alguna.
-
-**Lógica:**
-1. Obtiene IDs de `instrument_versions` con `status = 'VIGENTE'`.
-2. Busca un chunk con `embedding` no nulo en una de esas versiones.
-3. Llama a `match_vigente_chunks` con ese embedding y `match_count: 5`.
-4. Si el RPC devuelve 0 filas → falla con mensaje claro.
-
-**Errores típicos:**
-- "Falta NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY" → configurar ambas en `.env.local`.
-- "No hay instrument_versions con status=VIGENTE" → ejecutar ingest (ej. `npm run ingest:manual -- --all`).
-- "No hay chunks con embedding para versiones VIGENTE" → mismo; asegurar que la ingesta genera embeddings.
-- "La función match_vigente_chunks no existe o falló" → ejecutar la migración o el SQL en Supabase (ver `supabase/run_match_vigente_chunks_direct.sql`).
-- "RPC existe pero no devuelve resultados" → revisar que existan chunks vigentes con embedding y que la función filtre por `status = 'VIGENTE'`.
 
 ---
 

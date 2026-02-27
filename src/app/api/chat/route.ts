@@ -412,25 +412,18 @@ type MaxReliabilityPayload = {
   citations?: MaxReliabilityCitation[];
 };
 
-/** Extrae menciones de artículos (art, art., artículo, artículos, etc.) para post-check. */
+/** Extrae menciones de artículos (art, art., artículo(s)) para post-check. */
 function extractArticleMentions(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ");
-  const patterns = [
-    /(?:art\.?\s*\d+(?:-\d+)?)/gi,
-    /(?:artículo\s*\d+(?:-\d+)?)/gi,
-    /(?:artículos\s*\d+(?:-\d+)?)/gi,
-    /(?:articulo\s*\d+(?:-\d+)?)/gi,
-    /(?:articulos\s*\d+(?:-\d+)?)/gi,
-  ];
-  const seen = new Set<string>();
+  const patterns = [/art\.?\s*\d+/gi, /artículo?s?\s*\d+/gi];
+  const out: string[] = [];
   for (const re of patterns) {
     const matches = Array.from(normalized.matchAll(re));
     for (const m of matches) {
-      const s = m[0].replace(/\s+/g, " ").trim().toLowerCase();
-      if (s) seen.add(s);
+      out.push(m[0].toLowerCase().replace(/\s+/g, " "));
     }
   }
-  return Array.from(seen);
+  return Array.from(new Set(out));
 }
 
 /** Verifica que cada mención de artículo aparezca literalmente en el texto de los chunks (case-insensitive). */
@@ -488,18 +481,15 @@ export async function POST(request: NextRequest) {
     const history = Array.isArray(body.history) ? body.history : [];
     const rawMode = typeof body.mode === "string" ? body.mode : "";
     const modeNorm = rawMode.trim().toLowerCase().replace(/[_\s]+/g, "-");
-    const MAX_RELIABILITY_ALIASES = new Set([
-      "max-reliability",
-      "maxreliability",
-      "max",
-      "maximum-reliability",
-      "high-reliability",
-      "máxima-confiabilidad",
-      "maxima-confiabilidad",
-      "maxima",
-      "alta-confiabilidad",
-    ]);
-    const isMax = MAX_RELIABILITY_ALIASES.has(modeNorm);
+    const isMax =
+      modeNorm === "max-reliability" ||
+      modeNorm === "maxreliability" ||
+      modeNorm === "max" ||
+      modeNorm === "maximum-reliability" ||
+      modeNorm === "máxima-confiabilidad" ||
+      modeNorm === "maxima-confiabilidad";
+
+    console.log("[chat] rawMode=", rawMode, "modeNorm=", modeNorm, "isMax=", isMax);
 
     if (!message) {
       return NextResponse.json(
@@ -693,16 +683,18 @@ export async function POST(request: NextRequest) {
 
       // Si el juez devolvió NEED_MORE_INFO → type "clarify" (no "answer")
       if (decision === "NEED_MORE_INFO") {
-        const clarifyQuestions =
-          missingInfo.length > 0
-            ? missingInfo.slice(0, 4)
-            : [
-                "¿La exigencia está por escrito (circular/correo) o solo verbal?",
-                "¿Te han indicado alguna consecuencia o sanción si no reportas?",
-                "¿Esto ocurre en días libres, vacaciones o ambas?",
-              ];
         return NextResponse.json(
-          { type: "clarify", questions: clarifyQuestions } satisfies ChatResponse,
+          {
+            type: "clarify",
+            questions:
+              missingInfo.length > 0
+                ? missingInfo.slice(0, 3)
+                : [
+                    "¿La exigencia está por escrito o solo verbal?",
+                    "¿Te han indicado sanciones si no cumples?",
+                    "¿Aplica en días libres, vacaciones o ambos?",
+                  ],
+          } satisfies ChatResponse,
           { status: 200 }
         );
       }
