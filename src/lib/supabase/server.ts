@@ -12,9 +12,12 @@ export function getSupabaseServer() {
   const key = process.env.SUPABASE_SERVICE_ROLE_KEY;
 
   if (!url || !key) {
+    if (!url) {
+      console.error("[Supabase] Falta NEXT_PUBLIC_SUPABASE_URL en el entorno. RAG y backend requieren esta variable.");
+    }
     if (!key) {
-      console.warn(
-        "[Supabase] Falta SUPABASE_SERVICE_ROLE_KEY en el entorno (Vercel). Configure esta variable en Production/Preview/Development."
+      console.error(
+        "[Supabase] Falta SUPABASE_SERVICE_ROLE_KEY en el entorno (Vercel). El servidor usa SOLO service role; no uses anon key aquí."
       );
     }
     return null;

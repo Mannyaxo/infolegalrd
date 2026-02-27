@@ -9,18 +9,22 @@ Abrir en **Word**: Archivo → Abrir → este .md → Guardar como .docx.
 
 ## Variables de entorno (.env.local / Vercel)
 
+**Convención:** En este proyecto se usa `NEXT_PUBLIC_SUPABASE_URL` como URL de Supabase (no `SUPABASE_URL`). Algunos scripts aceptan `SUPABASE_URL` como fallback.
+
 | Variable | Uso | Obligatorio |
 |--------|-----|-------------|
-| `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase | Sí |
-| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Auth y cliente público | Sí (front) |
-| `SUPABASE_SERVICE_ROLE_KEY` | RAG, ingesta, feedback, backend | Sí (API/RAG) |
+| `NEXT_PUBLIC_SUPABASE_URL` | URL del proyecto Supabase (front y backend) | Sí |
+| `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Cliente público / auth en el **front** (navegador) | Sí (front) |
+| `SUPABASE_SERVICE_ROLE_KEY` | RAG, ingesta, feedback y **todo el backend** (API routes) | Sí (API/RAG) |
 | `OPENAI_API_KEY` | Embeddings (RAG) y fallbacks | Sí (chat/ingesta) |
 | `ANTHROPIC_API_KEY` | Orquestador del chat (Claude) | Sí (chat) |
 | `FIRECRAWL_API_KEY` | Crawler consultoria.gov.do | Solo para crawl |
 | `CONSTITUCION_SOURCE_URL` | URL PDF Constitución (ingest) | Opcional |
 | `CONSTITUCION_PUBLISHED_DATE` | Fecha promulgación (ingest) | Opcional |
 
-En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`. Sin `SUPABASE_SERVICE_ROLE_KEY` el RAG devuelve sin fuentes.
+**Importante:** El servidor (API, RAG, ingesta) usa **solo** `SUPABASE_SERVICE_ROLE_KEY`. No uses `NEXT_PUBLIC_SUPABASE_ANON_KEY` en el backend (getSupabaseServer() no la usa). Sin `SUPABASE_SERVICE_ROLE_KEY` el RAG devuelve vacío y getSupabaseServer() retorna null.
+
+En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`, `ANTHROPIC_API_KEY`.
 
 ---
 
@@ -44,8 +48,9 @@ En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPA
 | Ruta | Método | Descripción |
 |------|--------|-------------|
 | `/api/chat` | POST | Orquestador del chat: RAG (match_vigente_chunks), modos normal y máxima confiabilidad, clarificar, síntesis. Body: `message`, `history`, `userId`, `mode`. |
-| `/api/feedback` | POST | Guarda feedback de usuario. Body: `query`, `response`, `feedback`, `timestamp`, `mode`, `userId`. Tabla Supabase: `feedback`. |
-| `/api/consultas-limit` | - | Límite de consultas (freemium). |
+| `/api/feedback` | POST | Guarda feedback de usuario. Body: `query`, `response`, `feedback`, `timestamp`, `mode`, `userId`. Tabla Supabase: `feedback` (migración `20250222120000_feedback.sql`: columnas `id`, `query`, `response`, `feedback`, `created_at`, `user_id`, `mode`). |
+| `/api/consultas-limit` | GET | Límite freemium. Query: `userId` (opcional). Respuesta: `{ permitido: boolean, usadas: number, limite: number }`. Si falta `userId` devuelve permitido true, usadas 0, limite 5. |
+| `/api/consultas-limit` | POST | Incrementa contador de consultas. Body: `{ userId: string }`. Respuesta: `{ ok: boolean }`. |
 | `/api/env-check` | GET | Comprueba que existan variables de entorno (sin mostrar valores). |
 
 ---
@@ -62,6 +67,29 @@ En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPA
 - `supabase/migrations/` — SQL (instrumentos, match_vigente_chunks, feedback, hierarchy_level)
 
 **Otros documentos:** `docs/INGESTA_LEYES.md` (cómo ingestar y verificar), `docs/INFORME_PROYECTO_INFOLEGAL_RD.md` (informe para traspaso/IA).
+
+---
+
+## 0. scripts/verify_rag_rpc.ts (verificación RAG)
+
+Comprueba que la función RPC `match_vigente_chunks` exista en Supabase y devuelva resultados con un embedding real (no vector de ceros).
+
+**Uso:** `npm run verify:rag`
+
+**Requisitos:** `.env.local` con `NEXT_PUBLIC_SUPABASE_URL` y `SUPABASE_SERVICE_ROLE_KEY`. El script carga `.env.local` y falla si falta alguna.
+
+**Lógica:**
+1. Obtiene IDs de `instrument_versions` con `status = 'VIGENTE'`.
+2. Busca un chunk con `embedding` no nulo en una de esas versiones.
+3. Llama a `match_vigente_chunks` con ese embedding y `match_count: 5`.
+4. Si el RPC devuelve 0 filas → falla con mensaje claro.
+
+**Errores típicos:**
+- "Falta NEXT_PUBLIC_SUPABASE_URL o SUPABASE_SERVICE_ROLE_KEY" → configurar ambas en `.env.local`.
+- "No hay instrument_versions con status=VIGENTE" → ejecutar ingest (ej. `npm run ingest:manual -- --all`).
+- "No hay chunks con embedding para versiones VIGENTE" → mismo; asegurar que la ingesta genera embeddings.
+- "La función match_vigente_chunks no existe o falló" → ejecutar la migración o el SQL en Supabase (ver `supabase/run_match_vigente_chunks_direct.sql`).
+- "RPC existe pero no devuelve resultados" → revisar que existan chunks vigentes con embedding y que la función filtre por `status = 'VIGENTE'`.
 
 ---
 

@@ -672,6 +672,13 @@ export async function POST(request: NextRequest) {
         confidence = 0.6;
         answer = answerCleaned + "\n\n**Nota:** " + articleCaveat;
         caveats = [...caveats, articleCaveat];
+      } else {
+        answer = answerCleaned;
+      }
+
+      // Prohibido "No encontré fuentes" cuando hay contexto: hay chunks y se citan
+      if (retrievedChunks.length > 0 && /no\s+encontr[eé]\s+fuentes/i.test(answer)) {
+        answer = answer.replace(/\s*[.\s]*(no\s+encontr[eé]\s+fuentes[^.]*)[.]?\s*/gi, " ").replace(/\s+/g, " ").trim();
       }
 
       const finalCitationsForLog = citations.map((c) => ({
@@ -681,13 +688,41 @@ export async function POST(request: NextRequest) {
         status: c.status,
       }));
 
+      // Fuentes: si el modelo no devolvió citas, usar siempre las de los chunks enviados (evita "sin fuentes" con RAG lleno)
+      const fuentesFromChunks = (() => {
+        const seen = new Set<string>();
+        const out: { title: string; source_url: string; published_date: string; status: string; canonical_key?: string }[] = [];
+        for (const c of retrievedChunks) {
+          const key = `${c.citation.title}|${c.citation.source_url}|${c.citation.published_date}`;
+          if (!seen.has(key)) {
+            seen.add(key);
+            out.push({
+              title: c.citation.title ?? "",
+              source_url: c.citation.source_url ?? "",
+              published_date: c.citation.published_date ?? "",
+              status: c.citation.status ?? "VIGENTE",
+              canonical_key: c.citation.canonical_key,
+            });
+          }
+        }
+        return out;
+      })();
+      const fuentesToShow = finalCitationsForLog.length > 0 ? finalCitationsForLog : fuentesFromChunks;
+
       let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
-      if (decision !== "NEED_MORE_INFO" && finalCitationsForLog.length > 0) {
-        const fuentesLines = finalCitationsForLog.map(
-          (c) => `- ${c.title} | ${c.source_url} | ${c.published_date} | ${c.status}`
+      if (decision !== "NEED_MORE_INFO" && fuentesToShow.length > 0) {
+        const fuentesLines = fuentesToShow.map(
+          (c) => `- ${c.title} | ${c.published_date} | ${c.status} | ${c.source_url}`
         );
-        answerWithDisclaimer += `\n\n---\n**Fuentes (Citations):**\n${fuentesLines.join("\n")}`;
+        answerWithDisclaimer += `\n\n---\n**Fuentes:**\n${fuentesLines.join("\n")}`;
       }
+
+      const citationsForPayload = fuentesToShow.map((c) => ({
+        title: c.title,
+        source_url: c.source_url,
+        published_date: c.published_date,
+        status: c.status,
+      }));
 
       const payload = {
         type: "answer" as const,
@@ -700,7 +735,7 @@ export async function POST(request: NextRequest) {
         confidence,
         caveats,
         next_steps: nextSteps,
-        citations: finalCitationsForLog,
+        citations: citationsForPayload,
       };
 
       try {
@@ -711,7 +746,7 @@ export async function POST(request: NextRequest) {
             query: message,
             decision: payload.decision,
             confidence: payload.confidence,
-            citations: finalCitationsForLog,
+            citations: citationsForPayload,
             model_used: { judge: "claude" },
             tokens_in: null,
             tokens_out: null,

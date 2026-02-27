@@ -71,7 +71,7 @@ async function main() {
 
   if (!Array.isArray(rows) || rows.length === 0) {
     fail(
-      "match_vigente_chunks devolvió 0 filas con un embedding real. Revisa la función y que existan chunks vigentes con embedding."
+      "RPC existe pero no devuelve resultados; revisar status=VIGENTE y embeddings (instrument_chunks con embedding no nulo para versiones vigentes)."
     );
   }
 

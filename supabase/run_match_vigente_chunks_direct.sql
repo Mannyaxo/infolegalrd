@@ -84,9 +84,14 @@ TO anon, authenticated, service_role;
 -- Esperado: filas_devueltas >= 1
 
 -- ============================================================
--- OPCIONAL: índice liviano (lists=10). Si falla por memoria, ignorar.
--- ============================================================
+-- OPCIONAL: índice vector (si falla por maintenance_work_mem 54000, omitir)
+-- Opción A) IVFFLAT con lists pequeño (10); luego subir lists en baja carga.
 -- CREATE INDEX IF NOT EXISTS instrument_chunks_embedding_ivfflat
 --   ON public.instrument_chunks
 --   USING ivfflat (embedding vector_cosine_ops)
 --   WITH (lists = 10);
+-- Opción B) HNSW si pgvector lo soporta (mejor incremental, menos dependencia de maintenance_work_mem).
+-- CREATE INDEX IF NOT EXISTS instrument_chunks_embedding_hnsw
+--   ON public.instrument_chunks
+--   USING hnsw (embedding vector_cosine_ops);
+-- ============================================================
