@@ -289,6 +289,29 @@ async function callGeminiWithFallback(params: {
   }
 }
 
+/** Timeout con AbortController: aborta el fetch si existe signal; si no, usa Promise.race. */
+async function withTimeout<T>(
+  fn: (signal: AbortSignal) => Promise<T>,
+  ms: number,
+  label: string
+): Promise<T> {
+  const controller = new AbortController();
+  const timeoutId = setTimeout(() => controller.abort(), ms);
+  try {
+    const result = await fn(controller.signal);
+    clearTimeout(timeoutId);
+    return result;
+  } catch (e) {
+    clearTimeout(timeoutId);
+    if (e instanceof Error && e.name === "AbortError") {
+      const err = new Error(`Timeout ${label} ${ms}ms`);
+      console.error("[max-reliability] timeout:", label, "duración", ms, "ms");
+      throw err;
+    }
+    throw e;
+  }
+}
+
 async function callClaude(params: {
   provider: string;
   envKey?: string;
@@ -298,8 +321,9 @@ async function callClaude(params: {
   user: string;
   max_tokens?: number;
   temperature?: number;
+  signal?: AbortSignal;
 }): Promise<string> {
-  const { provider, apiKey, model, system, user, max_tokens = 1400, temperature = 0.2 } = params;
+  const { provider, apiKey, model, system, user, max_tokens = 1400, temperature = 0.2, signal } = params;
   console.log(`[API ${provider}] Intentando model: ${model}`);
   const res = await fetch(ANTHROPIC_URL, {
     method: "POST",
@@ -315,6 +339,7 @@ async function callClaude(params: {
       system,
       messages: [{ role: "user", content: [{ type: "text", text: user }] }],
     }),
+    signal,
   });
 
   if (!res.ok) {
@@ -337,6 +362,7 @@ async function callClaudeWithFallback(params: {
   user: string;
   max_tokens?: number;
   temperature?: number;
+  signal?: AbortSignal;
 }): Promise<string> {
   try {
     return await callClaude({
@@ -348,6 +374,7 @@ async function callClaudeWithFallback(params: {
       user: params.user,
       max_tokens: params.max_tokens,
       temperature: params.temperature,
+      signal: params.signal,
     });
   } catch (error) {
     console.error("[API Claude] primary failed, trying fallback:", error);
@@ -360,6 +387,7 @@ async function callClaudeWithFallback(params: {
       user: params.user,
       max_tokens: params.max_tokens,
       temperature: params.temperature,
+      signal: params.signal,
     });
   }
 }
@@ -562,8 +590,11 @@ export async function POST(request: NextRequest) {
         return NextResponse.json({ type: "clarify", questions: keyQuestions } satisfies ChatResponse, { status: 200 });
       }
 
-      const { contextText, allChunkText } = formatMaxReliabilityContext(retrievedChunks, 12000);
-      const allowedSourceUrls = new Set(retrievedChunks.map((c) => (c.citation.source_url ?? "").trim()).filter(Boolean));
+      const MR_TOP_K = 5;
+      const MR_MAX_CTX_CHARS = 7500;
+      const mrChunks = retrievedChunks.slice(0, MR_TOP_K);
+      const { contextText, allChunkText } = formatMaxReliabilityContext(mrChunks, MR_MAX_CTX_CHARS);
+      const allowedSourceUrls = new Set(mrChunks.map((c) => (c.citation.source_url ?? "").trim()).filter(Boolean));
 
       // CAPA 2: Prompt restrictivo — salida JSON estricta + estructura práctica de respuesta
       const maxReliabilitySystem =
@@ -599,24 +630,73 @@ export async function POST(request: NextRequest) {
         `CONTEXTO (instrumentos vigentes — solo puedes citar esto):\n${contextText}\n\n` +
         `Responde ÚNICAMENTE con el JSON del schema anterior.`;
 
-      const MAX_RELIABILITY_AGENT_TIMEOUT_MS = 8000;
+      const MAX_RELIABILITY_AGENT_TIMEOUT_MS = 25000;
+      const MR_MAX_TOKENS = 1600;
+      console.log("[max-reliability] chunks=", mrChunks.length, "ctxChars=", contextText.length);
+      console.log("[max-reliability] timeoutMs=", MAX_RELIABILITY_AGENT_TIMEOUT_MS, "max_tokens=", MR_MAX_TOKENS);
+
       let modelRaw: string;
       try {
-        modelRaw = await Promise.race([
-          callClaudeWithFallback({
-            apiKey: anthropicKey,
-            system: maxReliabilitySystem,
-            user: maxReliabilityUser,
-            max_tokens: 4096,
-            temperature: 0.1,
-          }),
-          new Promise<string>((_, rej) =>
-            setTimeout(() => rej(new Error(`Timeout ${MAX_RELIABILITY_AGENT_TIMEOUT_MS}ms`)), MAX_RELIABILITY_AGENT_TIMEOUT_MS)
-          ),
-        ]);
+        modelRaw = await withTimeout(
+          (signal) =>
+            callClaudeWithFallback({
+              apiKey: anthropicKey,
+              system: maxReliabilitySystem,
+              user: maxReliabilityUser,
+              max_tokens: MR_MAX_TOKENS,
+              temperature: 0,
+              signal,
+            }),
+          MAX_RELIABILITY_AGENT_TIMEOUT_MS,
+          "max-reliability"
+        );
       } catch (e) {
-        console.error("[max-reliability] Modelo falló:", e instanceof Error ? e.message : String(e));
-        const fallbackPayload = {
+        const errMsg = e instanceof Error ? e.message : String(e);
+        console.error("[max-reliability] Modelo falló:", errMsg);
+        const isTimeout = /timeout|abort/i.test(errMsg);
+        if (isTimeout) {
+          const shortCtx = contextText.slice(0, 4000);
+          const shortUser =
+            `Consulta del usuario:\n${message}\n\n` +
+            `CONTEXTO (recortado):\n${shortCtx}\n\nResponde ÚNICAMENTE con el JSON del schema (decision, confidence, answer, missing_info_questions, caveats, next_steps, citations).`;
+          try {
+            modelRaw = await withTimeout(
+              (signal) =>
+                callClaudeWithFallback({
+                  apiKey: anthropicKey,
+                  system: maxReliabilitySystem,
+                  user: shortUser,
+                  max_tokens: 1200,
+                  temperature: 0,
+                  signal,
+                }),
+              15000,
+              "max-reliability-retry"
+            );
+          } catch (retryErr) {
+            const openaiKey = process.env.OPENAI_API_KEY;
+            if (openaiKey) {
+              try {
+                modelRaw = await callOpenAIStyle({
+                  provider: "OpenAI-fallback",
+                  url: OPENAI_URL,
+                  apiKey: openaiKey,
+                  model: MODELS.openai_fallback,
+                  system: maxReliabilitySystem,
+                  user: shortUser,
+                  max_tokens: 1200,
+                  temperature: 0,
+                });
+              } catch (openaiErr) {
+                console.error("[max-reliability] fallback OpenAI falló:", openaiErr);
+                throw retryErr;
+              }
+            } else {
+              throw retryErr;
+            }
+          }
+        } else {
+          const fallbackPayload = {
           ok: true as const,
           mode: "max-reliability" as const,
           decision: "NO_EVIDENCE" as const,
@@ -644,6 +724,7 @@ export async function POST(request: NextRequest) {
           // no bloquear
         }
         return NextResponse.json(fallbackPayload, { status: 200 });
+        }
       }
 
       let parsed = extractJson<MaxReliabilityPayload>(modelRaw) ?? safeJsonParse<MaxReliabilityPayload>(modelRaw);
@@ -711,7 +792,7 @@ export async function POST(request: NextRequest) {
       }
 
       // Prohibido "No encontré fuentes" cuando hay contexto: hay chunks y se citan
-      if (retrievedChunks.length > 0 && /no\s+encontr[eé]\s+fuentes/i.test(answer)) {
+      if (mrChunks.length > 0 && /no\s+encontr[eé]\s+fuentes/i.test(answer)) {
         answer = answer.replace(/\s*[.\s]*(no\s+encontr[eé]\s+fuentes[^.]*)[.]?\s*/gi, " ").replace(/\s+/g, " ").trim();
       }
 
@@ -726,7 +807,7 @@ export async function POST(request: NextRequest) {
       const fuentesFromChunks = (() => {
         const seen = new Set<string>();
         const out: { title: string; source_url: string; published_date: string; status: string; canonical_key?: string }[] = [];
-        for (const c of retrievedChunks) {
+        for (const c of mrChunks) {
           const key = `${c.citation.title}|${c.citation.source_url}|${c.citation.published_date}`;
           if (!seen.has(key)) {
             seen.add(key);
