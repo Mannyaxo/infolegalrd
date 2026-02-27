@@ -549,6 +549,16 @@ export async function POST(request: NextRequest) {
       ragError = e instanceof Error ? e : new Error(String(e));
       console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
     }
+    console.log("[DEBUG] Chunks recuperados:", chunks.length);
+    if (chunks.length < 4) {
+      console.log("[DEBUG] Encolando por falta de chunks suficientes");
+      await enqueueForEnrichment(message, isMax ? "max-reliability" : "normal");
+      return NextResponse.json({
+        type: "answer",
+        content:
+          "No tengo esta norma completa en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Vuelve a preguntar en 5–10 minutos.",
+      });
+    }
     const ragContext = formatVigenteContext(chunks);
     const ragText = ragContext.text || "(No hay fuentes vigentes cargadas)";
     const ragCitations = ragContext.citations;
