@@ -577,11 +577,19 @@ export async function POST(request: NextRequest) {
 
     const historyText = formatHistory(history);
 
+    // Si el usuario envió una respuesta muy corta (ej. "no no no") tras un clarify, usar la última pregunta del usuario como consulta real
+    const lastAssistant = history.length > 0 && history[history.length - 1].role === "assistant";
+    const lastUserContent = history.filter((m) => m.role === "user").pop()?.content?.trim() ?? "";
+    const effectiveMessage =
+      message.length <= 50 && lastAssistant && lastUserContent.length > 20
+        ? lastUserContent
+        : message;
+
     // RAG obligatorio en ambos modos (match_vigente_chunks, topK=8)
     let chunks: VigenteChunk[] = [];
     let ragError: Error | null = null;
     try {
-      chunks = await retrieveVigenteChunks(message, RAG_TOP_K);
+      chunks = await retrieveVigenteChunks(effectiveMessage, RAG_TOP_K);
     } catch (e) {
       ragError = e instanceof Error ? e : new Error(String(e));
       console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
@@ -666,7 +674,7 @@ export async function POST(request: NextRequest) {
         `Las citations SOLO pueden ser de los chunks del contexto (mismo instrument/title, source_url y chunk_index que aparecen en el contexto).`;
 
       const maxReliabilityUser =
-        `Consulta del usuario:\n${message}\n\n` +
+        `Consulta del usuario:\n${effectiveMessage}\n\n` +
         (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
         `Contexto oficial verificado (solo puedes citar esto):\n${contextText}\n\n` +
         `Responde ÚNICAMENTE con el JSON del schema anterior.` +
@@ -699,7 +707,7 @@ export async function POST(request: NextRequest) {
         if (isTimeout) {
           const shortCtx = contextText.slice(0, 4000);
           const shortUser =
-            `Consulta del usuario:\n${message}\n\n` +
+            `Consulta del usuario:\n${effectiveMessage}\n\n` +
             `CONTEXTO (recortado):\n${shortCtx}\n\nResponde ÚNICAMENTE con el JSON del schema (decision, confidence, answer, missing_info_questions, caveats, next_steps, citations).`;
           try {
             modelRaw = await withTimeout(
@@ -838,6 +846,13 @@ export async function POST(request: NextRequest) {
         answer = answer.replace(/\s*[.\s]*(no\s+encontr[eé]\s+fuentes[^.]*)[.]?\s*/gi, " ").replace(/\s+/g, " ").trim();
       }
 
+      // Evitar respuestas que solo muestran Fuentes: si el cuerpo quedó vacío o muy corto, usar fallback
+      const answerTrimmed = answer.trim();
+      if (answerTrimmed.length < 80) {
+        answer =
+          "No se pudo generar un criterio específico con el contexto recuperado. Consulte las fuentes verificadas más abajo; si lo desea, reformule su consulta con más detalle o use el modo Normal para orientación general.";
+      }
+
       const finalCitationsForLog = citations.map((c) => ({
         title: c.instrument,
         source_url: c.source_url,
@@ -926,7 +941,7 @@ export async function POST(request: NextRequest) {
         generalAnswer = await callClaudeWithFallback({
           apiKey: anthropicKey,
           system: generalPrompt,
-          user: `Consulta: ${message}\n\nResponde en 5 bullets (acciones o recomendaciones prácticas).`,
+          user: `Consulta: ${effectiveMessage}\n\nResponde en 5 bullets (acciones o recomendaciones prácticas).`,
           max_tokens: 500,
           temperature: 0.2,
         });
@@ -992,7 +1007,7 @@ export async function POST(request: NextRequest) {
     const promptBusqueda = BUSQUEDA_PROMPT(tema);
     const baseUser =
       `${DISCLAIMER_HARD_RULES}\n` +
-      `Tema/pregunta (general): ${message}\n\n` +
+      `Tema/pregunta (general): ${effectiveMessage}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
       ragBlock +
       `\n\nInstrucción:\n${promptBusqueda}`;
@@ -1151,7 +1166,7 @@ export async function POST(request: NextRequest) {
       `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.`;
 
     const judgeUser =
-      `Consulta (general):\n${message}\n\n` +
+      `Consulta (general):\n${effectiveMessage}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
       `Resultados de agentes y búsqueda (pueden contener errores; verifica citas con el contexto oficial o "Búsqueda fuentes RD" si está disponible y sintetiza):\n\n` +
       results
@@ -1183,7 +1198,7 @@ export async function POST(request: NextRequest) {
       console.error("[API Claude] Síntesis falló, usando fallback con otros agentes:", claudeErr);
       const fallbackSystem =
         `${DISCLAIMER_HARD_RULES}\nSintetiza en español con estructura práctica: 1) Conclusión directa (3-5 líneas), 2) Base legal (solo si está en los datos), 3) Cómo proceder paso a paso, 4) Si la institución no responde, 5) Riesgos o precauciones. No inventes artículos. Tono profesional y práctico. Advertencia final: "${ADVERTENCIA_FINAL_EXACTA}".`;
-      const fallbackUser = `Consulta: ${message}\n\nDatos disponibles:\n${results.filter((r) => r.ok).map((r) => `${r.agent}:\n${truncate(r.content, 3000)}`).join("\n\n")}`;
+      const fallbackUser = `Consulta: ${effectiveMessage}\n\nDatos disponibles:\n${results.filter((r) => r.ok).map((r) => `${r.agent}:\n${truncate(r.content, 3000)}`).join("\n\n")}`;
       let fallbackContent = "";
       if (openaiKey) {
         try {
