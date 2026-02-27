@@ -587,6 +587,8 @@ export async function POST(request: NextRequest) {
       console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
     }
     const ragContext = formatVigenteContext(chunks);
+    const ragText = chunks.length > 0 ? ragContext.text : "";
+    const ragCitations = chunks.length > 0 ? ragContext.citations : [];
     const ragBlock = ragContext.text
       ? `\n\nContexto oficial verificado (solo puedes citar esto):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
       : "";
@@ -637,6 +639,7 @@ export async function POST(request: NextRequest) {
       // CAPA 2: Prompt restrictivo — salida JSON estricta + estructura práctica de respuesta
       const maxReliabilitySystem =
         `${DISCLAIMER_HARD_RULES}\n` +
+        `Usa SOLO el CONTEXTO OFICIAL VERIFICADO. Cita artículos SOLO si aparecen literalmente en chunk_text. Usa las citations proporcionadas para referencias.\n\n` +
         `Modo MÁXIMA CONFIABILIDAD. Reglas estrictas:\n` +
         `- SOLO puedes usar información presente en el CONTEXTO proporcionado.\n` +
         `- Está PROHIBIDO inventar números de artículos, nombres de leyes, fechas o citas.\n` +
@@ -666,7 +669,8 @@ export async function POST(request: NextRequest) {
         `Consulta del usuario:\n${message}\n\n` +
         (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
         `Contexto oficial verificado (solo puedes citar esto):\n${contextText}\n\n` +
-        `Responde ÚNICAMENTE con el JSON del schema anterior.`;
+        `Responde ÚNICAMENTE con el JSON del schema anterior.` +
+        `\n\nCONTEXTO OFICIAL VERIFICADO (SOLO PUEDES CITAR ESTO):\n${ragText}\n\nCitas disponibles (usa solo estas):\n${JSON.stringify(ragCitations, null, 2)}`;
 
       const MAX_RELIABILITY_AGENT_TIMEOUT_MS = 25000;
       const MR_MAX_TOKENS = 1600;
@@ -863,14 +867,16 @@ export async function POST(request: NextRequest) {
       const fuentesToShow = finalCitationsForLog.length > 0 ? finalCitationsForLog : fuentesFromChunks;
 
       let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
-      if (fuentesToShow.length > 0) {
-        const fuentesLines = fuentesToShow.map(
+      if (ragCitations.length > 0) {
+        const fuentesLines = ragCitations.map(
           (c) => `- ${c.title} | ${c.published_date ?? ""} | ${c.status} | ${c.source_url}`
         );
-        answerWithDisclaimer += `\n\n---\n**Fuentes:**\n${fuentesLines.join("\n")}`;
+        answerWithDisclaimer += `\n\n---\n**Fuentes verificadas:**\n${fuentesLines.join("\n")}`;
+      } else {
+        answerWithDisclaimer += "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos.";
       }
 
-      const citationsForPayload = fuentesToShow.map((c) => ({
+      const citationsForPayload = (ragCitations.length > 0 ? ragCitations : fuentesToShow).map((c) => ({
         title: c.title,
         source_url: c.source_url,
         published_date: c.published_date,
@@ -1135,6 +1141,7 @@ export async function POST(request: NextRequest) {
     // D) Síntesis final con Claude (juez) — Modo "Normal Seguro" — Estructura práctica
     const judgeSystem =
       `${DISCLAIMER_HARD_RULES}\n` +
+      `Usa SOLO el "Contexto oficial verificado". No cites artículos que no aparezcan en ese contexto.\n\n` +
       `Eres el juez/sintetizador final. Produce una respuesta orientada a la acción práctica sobre derecho dominicano, clara y estructurada.\n` +
       `PROHIBIDO: asesoría personalizada, instrucciones para evadir la ley, pedir datos personales.\n\n` +
       `REGLA ANTI-ALUCINACIÓN: NUNCA cites números de artículo ni plazos exactos a menos que aparezcan textualmente en el "Contexto oficial verificado" o en "Búsqueda fuentes RD" o en las respuestas de los agentes. Si no está verificado, escribe en términos generales o indica "consulte la Gaceta Oficial". No inventes artículos ni procedimientos.\n\n` +
@@ -1143,14 +1150,9 @@ export async function POST(request: NextRequest) {
       `Al final de la respuesta, añade en negrita la advertencia:\n**\"${ADVERTENCIA_FINAL_EXACTA}\"**\n\n` +
       `Tono profesional, firme y práctico. Sin lenguaje excesivamente académico. Prioriza Constitución > Ley > Decreto.`;
 
-    const judgeContextBlock =
-      chunks.length > 0 && ragContext.text
-        ? `Contexto oficial verificado (solo puedes citar esto):\n${truncate(ragContext.text, 6000)}\n\n`
-        : "";
     const judgeUser =
       `Consulta (general):\n${message}\n\n` +
       (historyText ? `Contexto previo:\n${historyText}\n\n` : "") +
-      judgeContextBlock +
       `Resultados de agentes y búsqueda (pueden contener errores; verifica citas con el contexto oficial o "Búsqueda fuentes RD" si está disponible y sintetiza):\n\n` +
       results
         .map((r) =>
@@ -1158,7 +1160,8 @@ export async function POST(request: NextRequest) {
             ? `=== ${r.agent} (OK) ===\n${truncate(r.content, 4000)}\n`
             : `=== ${r.agent} (FALLÓ) ===\nError: ${r.error}\n`
         )
-        .join("\n");
+        .join("\n") +
+      `\n\nContexto oficial verificado (solo puedes citar esto):\n${ragText || "(No hay fuentes vigentes cargadas)"}`;
 
     const claudeFallbackNote = `Respuesta generada sin Claude (fallo temporal). Datos de ${successCount} agentes disponibles.`;
     let final: string;
@@ -1264,11 +1267,13 @@ export async function POST(request: NextRequest) {
       final = finalCleaned;
     }
 
-    if (chunks.length > 0 && ragContext.citations.length > 0) {
-      const fuentesLines = ragContext.citations.map(
+    if (ragCitations.length > 0) {
+      const fuentesLines = ragCitations.map(
         (c) => `- ${c.title} | ${c.published_date ?? ""} | ${c.status} | ${c.source_url}`
       );
-      final += `\n\n---\n**Fuentes:**\n${fuentesLines.join("\n")}`;
+      final += `\n\n---\n**Fuentes verificadas:**\n${fuentesLines.join("\n")}`;
+    } else {
+      final += "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos.";
     }
     final = DISCLAIMER_PREFIX + final;
 
