@@ -61,15 +61,15 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
     panelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
 
     try {
+      const chatMode = maxReliability ? "max-reliability" : "standard";
+      const body = { message: text, history: [], userId: user?.id ?? null, mode: chatMode };
+      if (typeof process !== "undefined" && process.env.NODE_ENV === "development") {
+        console.log("[QueryPanel] POST /api/chat body.mode=", body.mode);
+      }
       const res = await fetch("/api/chat", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({
-          message: text,
-          history: [],
-          userId: user?.id ?? null,
-          mode: maxReliability ? "max-reliability" : "standard",
-        }),
+        body: JSON.stringify(body),
       });
       const data = (await res.json()) as ApiResponse;
 

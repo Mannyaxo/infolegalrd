@@ -9,7 +9,7 @@ Abrir en **Word**: Archivo → Abrir → este .md → Guardar como .docx.
 
 ## Variables de entorno (.env.local / Vercel)
 
-**Convención:** En este proyecto se usa `NEXT_PUBLIC_SUPABASE_URL` como URL de Supabase (no `SUPABASE_URL`). Algunos scripts aceptan `SUPABASE_URL` como fallback.
+**Fuente de verdad para URL:** En el backend y en la app se usa únicamente `NEXT_PUBLIC_SUPABASE_URL`. La variable `SUPABASE_URL` no se usa en Vercel; solo algunos scripts locales (ingest_manual, crawl_consultoria, verify_rag_rpc) la aceptan como fallback. En Vercel configurar solo `NEXT_PUBLIC_SUPABASE_URL`.
 
 | Variable | Uso | Obligatorio |
 |--------|-----|-------------|
@@ -47,7 +47,7 @@ En **Vercel** configurar al menos: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPA
 
 | Ruta | Método | Descripción |
 |------|--------|-------------|
-| `/api/chat` | POST | Orquestador del chat: RAG (match_vigente_chunks), modos normal y máxima confiabilidad, clarificar, síntesis. Body: `message`, `history`, `userId`, `mode`. |
+| `/api/chat` | POST | Orquestador del chat: RAG (match_vigente_chunks), modos normal y máxima confiabilidad, clarificar, síntesis. Body: `message`, `history`, `userId`, `mode`. El backend acepta aliases de modo: `max-reliability`, `max`, `máxima-confiabilidad`, `maxima`, `alta-confiabilidad`, etc. (se normalizan a isMax para entrar al flujo max-reliability). |
 | `/api/feedback` | POST | Guarda feedback de usuario. Body: `query`, `response`, `feedback`, `timestamp`, `mode`, `userId`. Tabla Supabase: `feedback` (migración `20250222120000_feedback.sql`: columnas `id`, `query`, `response`, `feedback`, `created_at`, `user_id`, `mode`). |
 | `/api/consultas-limit` | GET | Límite freemium. Query: `userId` (opcional). Respuesta: `{ permitido: boolean, usadas: number, limite: number }`. Si falta `userId` devuelve permitido true, usadas 0, limite 5. |
 | `/api/consultas-limit` | POST | Incrementa contador de consultas. Body: `{ userId: string }`. Respuesta: `{ ok: boolean }`. |

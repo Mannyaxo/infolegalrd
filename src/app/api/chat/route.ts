@@ -412,14 +412,24 @@ type MaxReliabilityPayload = {
   citations?: MaxReliabilityCitation[];
 };
 
-/** Extrae menciones de artículos (Art. N, Artículo N) para post-check. */
+/** Extrae menciones de artículos (art, art., artículo, artículos, etc.) para post-check. */
 function extractArticleMentions(text: string): string[] {
   const normalized = text.replace(/\s+/g, " ");
-  const artDot = Array.from(normalized.matchAll(/(?:art\.?\s*\d+(?:-\d+)?)/gi), (m) => m[0].replace(/\s+/g, " ").toLowerCase());
-  const articulo = Array.from(normalized.matchAll(/(?:artículo\s*\d+(?:-\d+)?)/gi), (m) => m[0].replace(/\s+/g, " ").toLowerCase());
+  const patterns = [
+    /(?:art\.?\s*\d+(?:-\d+)?)/gi,
+    /(?:artículo\s*\d+(?:-\d+)?)/gi,
+    /(?:artículos\s*\d+(?:-\d+)?)/gi,
+    /(?:articulo\s*\d+(?:-\d+)?)/gi,
+    /(?:articulos\s*\d+(?:-\d+)?)/gi,
+  ];
   const seen = new Set<string>();
-  for (let i = 0; i < artDot.length; i++) if (artDot[i]) seen.add(artDot[i]);
-  for (let i = 0; i < articulo.length; i++) if (articulo[i]) seen.add(articulo[i]);
+  for (const re of patterns) {
+    const matches = Array.from(normalized.matchAll(re));
+    for (const m of matches) {
+      const s = m[0].replace(/\s+/g, " ").trim().toLowerCase();
+      if (s) seen.add(s);
+    }
+  }
   return Array.from(seen);
 }
 
@@ -476,7 +486,20 @@ export async function POST(request: NextRequest) {
 
     const message = typeof body.message === "string" ? body.message.trim() : "";
     const history = Array.isArray(body.history) ? body.history : [];
-    const mode = typeof body.mode === "string" ? body.mode : undefined;
+    const rawMode = typeof body.mode === "string" ? body.mode : "";
+    const modeNorm = rawMode.trim().toLowerCase().replace(/[_\s]+/g, "-");
+    const MAX_RELIABILITY_ALIASES = new Set([
+      "max-reliability",
+      "maxreliability",
+      "max",
+      "maximum-reliability",
+      "high-reliability",
+      "máxima-confiabilidad",
+      "maxima-confiabilidad",
+      "maxima",
+      "alta-confiabilidad",
+    ]);
+    const isMax = MAX_RELIABILITY_ALIASES.has(modeNorm);
 
     if (!message) {
       return NextResponse.json(
@@ -514,8 +537,11 @@ export async function POST(request: NextRequest) {
       ? `\n\nContexto oficial (instrumentos vigentes):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
       : "";
 
+    console.log("[chat] rawMode=", rawMode, "modeNorm=", modeNorm, "isMax=", isMax);
+    console.log("[chat] RAG chunks=", chunks.length, "ragError=", ragError?.message ?? null);
+
     // ————— Modo Máxima Confiabilidad (anti-alucinación) —————
-    if (mode === "max-reliability") {
+    if (isMax) {
       const supabase = getSupabaseServer();
       const retrievedChunks = chunks;
 
@@ -665,6 +691,22 @@ export async function POST(request: NextRequest) {
       // Citations reales: solo source_url presentes en chunks
       citations = citations.filter((c) => allowedSourceUrls.has((c.source_url ?? "").trim()));
 
+      // Si el juez devolvió NEED_MORE_INFO → type "clarify" (no "answer")
+      if (decision === "NEED_MORE_INFO") {
+        const clarifyQuestions =
+          missingInfo.length > 0
+            ? missingInfo.slice(0, 4)
+            : [
+                "¿La exigencia está por escrito (circular/correo) o solo verbal?",
+                "¿Te han indicado alguna consecuencia o sanción si no reportas?",
+                "¿Esto ocurre en días libres, vacaciones o ambas?",
+              ];
+        return NextResponse.json(
+          { type: "clarify", questions: clarifyQuestions } satisfies ChatResponse,
+          { status: 200 }
+        );
+      }
+
       // CAPA 3: Post-check — artículos no verificados: eliminar esa parte y añadir caveat
       const { cleaned: answerCleaned, caveat: articleCaveat } = stripUnverifiedArticlesAndAddCaveat(answer, allChunkText);
       if (articleCaveat) {
@@ -710,7 +752,7 @@ export async function POST(request: NextRequest) {
       const fuentesToShow = finalCitationsForLog.length > 0 ? finalCitationsForLog : fuentesFromChunks;
 
       let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
-      if (decision !== "NEED_MORE_INFO" && fuentesToShow.length > 0) {
+      if (fuentesToShow.length > 0) {
         const fuentesLines = fuentesToShow.map(
           (c) => `- ${c.title} | ${c.published_date} | ${c.status} | ${c.source_url}`
         );
