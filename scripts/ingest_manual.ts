@@ -76,18 +76,10 @@ function deriveMetadata(filePath: string): { canonical_key: string; title: strin
   const parentDir = basename(dirname(normalized));
   const fileName = basename(normalized, ".txt");
 
-  if (/constitucion/i.test(normalized) || /constitucion/i.test(parentDir)) {
-    return {
-      canonical_key: "CONSTITUCION-RD",
-      title: "Constitución de la República Dominicana",
-      type: "constitucion",
-      number: null,
-    };
-  }
-
   const leyMatch = parentDir.match(/(?:Ley|LEY)\s*(\d{2,3}-\d{2})/i);
   const decretoMatch = parentDir.match(/Decreto\s*(\d{2,3}-\d{2})/i);
   const codigoMatch = parentDir.match(/Ley\s*(\d{2}-\d{2})/i);
+  const fileNum = fileName.match(/^(\d{2,3}-\d{2})$/);
 
   if (decretoMatch) {
     const num = decretoMatch[1];
@@ -117,13 +109,24 @@ function deriveMetadata(filePath: string): { canonical_key: string; title: strin
     };
   }
 
-  const fileNum = fileName.match(/^(\d{2,3}-\d{2})$/);
   if (fileNum) {
     return {
       canonical_key: `LEY-${fileNum[1]}`,
       title: parentDir,
       type: "ley",
       number: fileNum[1],
+    };
+  }
+
+  // Constitución solo si la carpeta es específicamente "constitucion" (no "Ley X Tribunal Constitucional")
+  const isConstitucionFolder =
+    /(^|\/)constitucion(\s|$|\/)/i.test(normalized) || parentDir.toLowerCase().replace(/\s+/g, " ").startsWith("constitucion ");
+  if (isConstitucionFolder) {
+    return {
+      canonical_key: "CONSTITUCION-RD",
+      title: "Constitución de la República Dominicana",
+      type: "constitucion",
+      number: null,
     };
   }
 
@@ -221,12 +224,12 @@ async function ingestOne(
 
   const { data: existingVersion } = await supabase
     .from("instrument_versions")
-    .select("id")
+    .select("id, instrument_id")
     .eq("content_hash", contentHash)
     .maybeSingle();
   let versionId: string;
-  if (existingVersion?.id) {
-    console.log("   Versión con mismo content_hash ya existe. Reutilizando:", existingVersion.id);
+  if (existingVersion?.id && existingVersion.instrument_id === instrumentId) {
+    console.log("   Versión con mismo content_hash ya existe para este instrumento. Reutilizando:", existingVersion.id);
     versionId = existingVersion.id;
   } else {
     if (opts.status === "VIGENTE") {
