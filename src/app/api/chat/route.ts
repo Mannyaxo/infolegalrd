@@ -9,6 +9,7 @@ import {
   type VigenteChunk,
 } from "@/lib/rag/vigente";
 import { getSupabaseServer } from "@/lib/supabase/server";
+import { enqueueForEnrichment } from "@/lib/enrichment/enqueue";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -30,7 +31,7 @@ Reglas estrictas:
 
 /** Mensaje cuando no hay evidencia y se encola la consulta para auto-enriquecimiento. */
 const MESSAGE_ENRICHMENT_PENDING =
-  "No tengo esta norma aún en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Por favor, vuelve a preguntar en 5-10 minutos.";
+  "No tengo esta norma completa en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Vuelve a preguntar en 5-10 minutos.";
 
 /** Estructura obligatoria de respuesta RAG: asistente jurídico práctico para ciudadanos. */
 const RAG_RESPONSE_STRUCTURE = `
@@ -77,43 +78,6 @@ function normalizeText(s: string): string {
 }
 
 /** Normaliza query para dedup: trim, lowercase, colapsar espacios. */
-function normalizeQueryForDedup(q: string): string {
-  return q.trim().toLowerCase().replace(/\s+/g, " ");
-}
-
-/**
- * Encola en corpus_enrichment_queue cuando no hay evidencia (chunks = 0).
- * No inserta si ya existe una fila reciente (24h) con status no finalizado y query igual o muy similar.
- * No bloquea: si supabase es null o falla la escritura, no afecta la respuesta.
- */
-async function enqueueNoEvidence(
-  supabase: ReturnType<typeof getSupabaseServer>,
-  query: string,
-  mode: "normal" | "max-reliability"
-): Promise<void> {
-  if (!supabase || !query) return;
-  const normalized = normalizeQueryForDedup(query);
-  const twentyFourHoursAgo = new Date(Date.now() - 24 * 60 * 60 * 1000).toISOString();
-  try {
-    const client = supabase as unknown as {
-      from: (t: string) => {
-        select: (c: string) => { gte: (col: string, val: string) => { in: (col: string, val: string[]) => Promise<{ data: { query: string }[] | null }> } };
-        insert: (r: object) => Promise<unknown>;
-      };
-    };
-    const { data: existing } = await client
-      .from("corpus_enrichment_queue")
-      .select("id, query")
-      .gte("created_at", twentyFourHoursAgo)
-      .in("status", ["PENDING", "FETCHING", "FETCHED", "FETCHED_REVIEW", "INGESTING"]);
-    const rows = existing ?? [];
-    if (rows.some((r) => normalizeQueryForDedup(r.query) === normalized)) return;
-    await client.from("corpus_enrichment_queue").insert({ query, mode, status: "PENDING" });
-  } catch {
-    // no bloquear respuesta
-  }
-}
-
 function truncate(s: string, max = 2500): string {
   if (s.length <= max) return s;
   return `${s.slice(0, max)}…`;
@@ -625,7 +589,7 @@ export async function POST(request: NextRequest) {
         } catch {
           // no bloquear
         }
-        await enqueueNoEvidence(supabase, message, "max-reliability");
+        await enqueueForEnrichment(message, "max-reliability");
         return NextResponse.json(
           { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING } satisfies ChatResponse,
           { status: 200 }
@@ -818,9 +782,9 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // Sin evidencia: encolar para auto-enriquecimiento y pedir volver en 5-10 min
-      if (decision === "NO_EVIDENCE") {
-        await enqueueNoEvidence(supabase, message, "max-reliability");
+      // Sin evidencia o confianza baja: encolar para auto-enriquecimiento y pedir volver en 5-10 min
+      if (decision === "NO_EVIDENCE" || confidence < 0.5) {
+        await enqueueForEnrichment(message, "max-reliability");
         return NextResponse.json(
           { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING } satisfies ChatResponse,
           { status: 200 }
@@ -931,8 +895,7 @@ export async function POST(request: NextRequest) {
 
     // Modo normal sin chunks: encolar para auto-enriquecimiento y pedir volver en 5-10 min
     if (chunks.length === 0) {
-      const supabaseNormal = getSupabaseServer();
-      await enqueueNoEvidence(supabaseNormal, message, "normal");
+      await enqueueForEnrichment(message, "normal");
       return NextResponse.json(
         { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING, note: undefined } satisfies ChatResponse,
         { status: 200 }
