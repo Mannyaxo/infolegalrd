@@ -28,6 +28,10 @@ Reglas estrictas:
 - Siempre escribe en español, con precisión y prudencia.
 `;
 
+/** Mensaje cuando no hay evidencia y se encola la consulta para auto-enriquecimiento. */
+const MESSAGE_ENRICHMENT_PENDING =
+  "No tengo esta norma aún en mi base verificada. Estoy buscando y verificando la versión oficial en fuentes gubernamentales. Por favor, vuelve a preguntar en 5-10 minutos.";
+
 /** Estructura obligatoria de respuesta RAG: asistente jurídico práctico para ciudadanos. */
 const RAG_RESPONSE_STRUCTURE = `
 ESTRUCTURA OBLIGATORIA (respeta este orden; salida compacta):
@@ -622,7 +626,10 @@ export async function POST(request: NextRequest) {
           // no bloquear
         }
         await enqueueNoEvidence(supabase, message, "max-reliability");
-        return NextResponse.json({ type: "clarify", questions: keyQuestions } satisfies ChatResponse, { status: 200 });
+        return NextResponse.json(
+          { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING } satisfies ChatResponse,
+          { status: 200 }
+        );
       }
 
       const MR_TOP_K = 5;
@@ -811,6 +818,15 @@ export async function POST(request: NextRequest) {
         );
       }
 
+      // Sin evidencia: encolar para auto-enriquecimiento y pedir volver en 5-10 min
+      if (decision === "NO_EVIDENCE") {
+        await enqueueNoEvidence(supabase, message, "max-reliability");
+        return NextResponse.json(
+          { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING } satisfies ChatResponse,
+          { status: 200 }
+        );
+      }
+
       // CAPA 3: Post-check — artículos no verificados: eliminar esa parte y añadir caveat
       const { cleaned: answerCleaned, caveat: articleCaveat } = stripUnverifiedArticlesAndAddCaveat(answer, allChunkText);
       if (articleCaveat) {
@@ -913,32 +929,14 @@ export async function POST(request: NextRequest) {
       return NextResponse.json(payload, { status: 200 });
     }
 
-    // Modo normal sin chunks: pasos generales útiles + disclaimer; no pedir reformulación obligatoria
+    // Modo normal sin chunks: encolar para auto-enriquecimiento y pedir volver en 5-10 min
     if (chunks.length === 0) {
-      const generalPrompt =
-        `${DISCLAIMER_HARD_RULES}\nResponde con orientación práctica conservadora sobre derecho dominicano. NO pidas reformulación obligatoria. NO cites artículos ni números de ley (no hay fuentes cargadas). Da una lista numerada 1–5 de pasos concretos (ej. Solicita por escrito la base normativa, Conserva documentos/correos, Consulta abogado si aplica). Sin datos personales. Tono profesional y directo.`;
-      let generalAnswer = "";
-      try {
-        generalAnswer = await callClaudeWithFallback({
-          apiKey: anthropicKey,
-          system: generalPrompt,
-          user: `Consulta: ${effectiveMessage}\n\nResponde con lista numerada 1–5 de pasos prácticos (solicitar por escrito, conservar documentos, consultar abogado si aplica, etc.).`,
-          max_tokens: 500,
-          temperature: 0.2,
-        });
-      } catch {
-        generalAnswer =
-          "1. Solicita por escrito la base normativa que exigen.\n2. Conserva correos, circulares o comunicaciones.\n3. Consulta con un abogado colegiado para tu caso concreto.\n4. No firmes nada bajo presión sin asesoría.\n5. Documenta fechas y hechos de forma objetiva.";
-      }
-      const withDisclaimer =
-        DISCLAIMER_PREFIX +
-        (generalAnswer.trim() || "Orientación general no disponible.") +
-        "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos. Verifique en gacetaoficial.gob.do, tc.gob.do, map.gob.do.";
       const supabaseNormal = getSupabaseServer();
       await enqueueNoEvidence(supabaseNormal, message, "normal");
-      return NextResponse.json({ type: "answer", content: withDisclaimer, note: undefined } satisfies ChatResponse, {
-        status: 200,
-      });
+      return NextResponse.json(
+        { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING, note: undefined } satisfies ChatResponse,
+        { status: 200 }
+      );
     }
 
     // B) Clarificador con Claude

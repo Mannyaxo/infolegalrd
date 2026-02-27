@@ -1,9 +1,9 @@
 /**
- * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → ingest → INGESTED/FAILED).
- * Busca candidatos en consultoria.gov.do vía Firecrawl search, descarga markdown, ingesta con _consultoria_pipeline.
+ * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → verificación multi-IA → ingest → INGESTED/FAILED).
+ * Busca en consultoria.gov.do y gacetaoficial.gob.do; verifica con Claude + Grok + GPT-4o-mini; solo ingesta si ≥2/3 confirman.
  *
  * Uso: npm run enrich:queue [-- --once] [--limit N] [--dry-run] [--force]
- * Env: FIRECRAWL_API_KEY, SUPABASE_URL (o NEXT_PUBLIC_SUPABASE_URL), SUPABASE_SERVICE_ROLE_KEY, OPENAI_API_KEY
+ * Env: FIRECRAWL_API_KEY, SUPABASE_*, OPENAI_API_KEY; para verificación: ANTHROPIC_API_KEY, GROQ_API_KEY (o XAI_API_KEY)
  */
 import "dotenv/config";
 import { resolve } from "path";
@@ -19,13 +19,9 @@ import {
   upsertInstrument,
   ingestVersionAndChunks,
 } from "./_consultoria_pipeline";
+import { searchAndDownloadLaw, verifyWithMultipleAIs } from "../src/lib/enrichment/enrich";
 
 dotenv.config({ path: resolve(process.cwd(), ".env.local") });
-
-const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v1/search";
-const CONSULTORIA_DOMAIN = "consultoria.gov.do";
-const MIN_CONTENT_LENGTH = 200;
-const PENDING_STATUSES = ["PENDING", "FETCHING", "FETCHED", "FETCHED_REVIEW", "INGESTING"] as const;
 
 type QueueRow = {
   id: string;
@@ -50,49 +46,6 @@ function parseArgs() {
   return { once, dryRun, force, limit: isNaN(limit) ? 5 : Math.max(1, limit) };
 }
 
-async function firecrawlSearch(apiKey: string, query: string, limit: number): Promise<Array<{ url: string; title?: string; markdown?: string; metadata?: { sourceURL?: string } }>> {
-  const searchQuery = `site:${CONSULTORIA_DOMAIN} ${query}`.slice(0, 200);
-  const res = await fetch(FIRECRAWL_SEARCH_URL, {
-    method: "POST",
-    headers: {
-      Authorization: `Bearer ${apiKey}`,
-      "Content-Type": "application/json",
-    },
-    body: JSON.stringify({
-      query: searchQuery,
-      limit,
-      scrapeOptions: { formats: ["markdown"] },
-    }),
-  });
-  if (!res.ok) {
-    const err = await res.text();
-    throw new Error(`Firecrawl search failed: ${res.status} ${err}`);
-  }
-  const data = (await res.json()) as { success?: boolean; data?: Array<{ url?: string; title?: string; markdown?: string; metadata?: { sourceURL?: string } }>; error?: string };
-  if (!data.success || !Array.isArray(data.data)) return [];
-  return data.data
-    .filter((d) => d?.url)
-    .map((d) => ({
-      url: d.url!,
-      title: d.title,
-      markdown: d.markdown,
-      metadata: d.metadata,
-    }));
-}
-
-function pickBestCandidate(
-  candidates: Array<{ url: string; title?: string; markdown?: string }>
-): { url: string; title: string; markdown: string } | null {
-  const withContent = candidates.filter((c) => (c.markdown ?? "").trim().length >= MIN_CONTENT_LENGTH);
-  if (withContent.length === 0) return null;
-  const first = withContent[0];
-  return {
-    url: first.url,
-    title: (first.title ?? "Sin título").trim(),
-    markdown: (first.markdown ?? "").trim(),
-  };
-}
-
 async function processOne(
   supabase: SupabaseClient,
   openai: OpenAI,
@@ -115,18 +68,30 @@ async function processOne(
 
   await updateStatus("FETCHING");
 
-  let candidates: Array<{ url: string; title?: string; markdown?: string }>;
+  let best: { url: string; title: string; markdown: string } | null;
   try {
-    candidates = await firecrawlSearch(firecrawlKey, row.query, 5);
+    best = await searchAndDownloadLaw(row.query, firecrawlKey);
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     await updateStatus("FAILED", { error: errMsg });
     return;
   }
 
-  const best = pickBestCandidate(candidates);
   if (!best) {
-    await updateStatus("FETCHED_REVIEW", { meta: { ...(row.meta || {}), candidates: candidates.map((c) => ({ url: c.url, title: c.title })) } });
+    await updateStatus("FETCHED_REVIEW", { meta: { ...(row.meta || {}), note: "no_candidate_from_official_domains" } });
+    return;
+  }
+
+  // Verificación multi-IA: al menos 2 de 3 deben confirmar (norma correcta y vigente)
+  const verification = await verifyWithMultipleAIs(best.markdown, best.title, row.query, {
+    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,
+    groqApiKey: process.env.GROQ_API_KEY ?? null,
+    xaiApiKey: process.env.XAI_API_KEY ?? null,
+    openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+  });
+  if (!verification.verified) {
+    const errDetail = `Verificación multi-IA no superada (${verification.votes}/${verification.total} confirmaciones). ${verification.details.join("; ")}`;
+    await updateStatus("FAILED", { error: errDetail, meta: { ...(row.meta || {}), verification: verification.details } });
     return;
   }
 
