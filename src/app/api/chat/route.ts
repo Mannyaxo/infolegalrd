@@ -587,8 +587,8 @@ export async function POST(request: NextRequest) {
       console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
     }
     const ragContext = formatVigenteContext(chunks);
-    const ragText = chunks.length > 0 ? ragContext.text : "";
-    const ragCitations = chunks.length > 0 ? ragContext.citations : [];
+    const ragText = ragContext.text || "(No hay fuentes vigentes cargadas)";
+    const ragCitations = ragContext.citations;
     const ragBlock = ragContext.text
       ? `\n\nContexto oficial verificado (solo puedes citar esto):\n${truncate(ragContext.text, 8000)}\n\nRegla de metadata: No afirmes fechas de promulgación, número de Gaceta Oficial ni leyes de ratificación si esa información no aparece en los chunks o en la metadata (published_date/effective_date/source_url/gazette_ref). Si no está, di "no consta en el material recuperado". No inventes artículos ni procedimientos.${RAG_RESPONSE_STRUCTURE}\nResponde basándote SOLO en este contexto y con la estructura anterior.`
       : "";
