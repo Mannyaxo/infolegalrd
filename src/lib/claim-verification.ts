@@ -20,7 +20,7 @@ export function extractLegalClaims(answerText: string): string[] {
     if (s.length < MIN_CLAIM_LENGTH) continue;
     if (legalTrigger.test(s)) claims.push(s);
   }
-  return [...new Set(claims)];
+  return Array.from(new Set(claims));
 }
 
 /**
