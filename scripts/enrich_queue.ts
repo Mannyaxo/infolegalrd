@@ -197,8 +197,7 @@ async function processOne(
     const ingestedReglamentos: Array<{ canonical_key: string; title: string }> = [];
     const ingestedResoluciones: Array<{ canonical_key: string; title: string }> = [];
 
-    // Si la consulta menciona una ley (ej. ley 10-07), buscar e ingestar reglamentos asociados
-    const lawMatch = row.query.match(/ley\s*(\d{2,3}-\d{2})/i);
+    // Si la consulta menciona una ley (ej. ley 10-07), buscar e ingestar reglamentos y resoluciones
     if (lawMatch && !dryRun) {
       const lawNum = lawMatch[1];
       try {
@@ -287,6 +286,16 @@ async function processOne(
         console.warn("   Error buscando resoluciones:", e instanceof Error ? e.message : String(e));
       }
       if (ingestedResoluciones.length > 0) meta.ingestedResoluciones = ingestedResoluciones;
+    }
+
+    // Resumen en consola para verificar qué se ingirió
+    console.log("   --- Ingestado ---");
+    console.log("   Principal:", meta.ingestedMain ? `${(meta.ingestedMain as { canonical_key: string }).canonical_key} (${(meta.ingestedMain as { chunksCount: number }).chunksCount} chunks)` : "-");
+    if (Array.isArray(meta.ingestedReglamentos) && meta.ingestedReglamentos.length > 0) {
+      console.log("   Reglamentos:", (meta.ingestedReglamentos as Array<{ canonical_key: string; title: string }>).map((r) => r.canonical_key).join(", "));
+    }
+    if (Array.isArray(meta.ingestedResoluciones) && meta.ingestedResoluciones.length > 0) {
+      console.log("   Resoluciones:", (meta.ingestedResoluciones as Array<{ canonical_key: string; title: string }>).map((r) => r.canonical_key).join(", "));
     }
 
     await updateStatus("INGESTED", { meta });
