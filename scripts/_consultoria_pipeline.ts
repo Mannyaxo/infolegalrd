@@ -51,7 +51,7 @@ export function deriveCanonicalFromTitle(
   url: string
 ): { canonical_key: string; type: string; number: string | null } {
   const t = title || "";
-  const ley = t.match(/(?:Ley|LEY)\s*(\d{2,3}-\d{2})/i);
+  const ley = t.match(/(?:Ley|LEY)\s*(?:No\.?|Nº?\s*)?(\d{2,3}-\d{2})/i);
   const decreto = t.match(/Decreto\s*(\d{2,3}-\d{2})/i);
   const resolucion = t.match(/Resoluci[oó]n\s*(\d{2,3}-\d{2})/i);
   const constitucion = /constitucion/i.test(t) || /constitucion/i.test(url);

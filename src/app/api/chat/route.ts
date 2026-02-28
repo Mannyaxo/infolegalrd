@@ -11,6 +11,7 @@ import {
 } from "@/lib/rag/vigente";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { enqueueForEnrichment } from "@/lib/enrichment/enqueue";
+import { verifyAnswerClaims } from "@/lib/claim-verification";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -566,6 +567,8 @@ export async function POST(request: NextRequest) {
           const rest = chunks.filter((c) => !seen.has(`${c.citation.source_url ?? ""}|${c.chunk_index}`));
           chunks = [...byCanonical, ...rest].slice(0, RAG_TOP_K);
           console.log("[DEBUG] Chunks tras merge por ley solicitada:", askedCanonical, "total:", chunks.length);
+        } else {
+          console.log("[DEBUG] No hay chunks por canonical_key", askedCanonical, "- ¿ley ingestada con ese key? Revisar instruments en Supabase.");
         }
       } catch (e) {
         console.warn("[RAG] retrieveVigenteChunksByCanonicalKey failed:", e);
@@ -848,6 +851,15 @@ export async function POST(request: NextRequest) {
         caveats = [...caveats, articleCaveat];
       } else {
         answer = answerCleaned;
+      }
+
+      // CAPA 4 (Harvey-style): verificación de claims — afirmaciones legales deben estar respaldadas por chunks
+      const { caveat: claimCaveat } = verifyAnswerClaims(answer, allChunkText);
+      if (claimCaveat) {
+        decision = "UNVERIFIED_CITATION";
+        confidence = Math.min(confidence, 0.65);
+        answer = answer + "\n\n**Nota:** " + claimCaveat;
+        caveats = [...caveats, claimCaveat];
       }
 
       // Prohibido "No encontré fuentes" cuando hay contexto: hay chunks y se citan
