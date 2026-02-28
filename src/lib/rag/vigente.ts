@@ -96,6 +96,43 @@ export async function retrieveVigenteChunks(query: string, topK: number = 6): Pr
 }
 
 /**
+ * Recupera chunks de un instrumento VIGENTE por canonical_key (ej. LEY-590-16).
+ * Sirve para asegurar que la ley que el usuario pide aparezca en el contexto aunque la búsqueda semántica no la rankee alto.
+ */
+export async function retrieveVigenteChunksByCanonicalKey(
+  canonicalKey: string,
+  limit: number = 8
+): Promise<VigenteChunk[]> {
+  const supabase = getSupabaseServer();
+  if (!supabase || !canonicalKey?.trim()) return [];
+  const { data: rows, error } = await (supabase as unknown as {
+    rpc(n: string, p: { p_canonical_key: string; p_match_count: number }): Promise<{
+      data: MatchVigenteRow[] | null;
+      error: { message?: string } | null;
+    }>;
+  }).rpc("get_vigente_chunks_by_canonical_key", {
+    p_canonical_key: canonicalKey.trim(),
+    p_match_count: limit,
+  });
+  if (error || !Array.isArray(rows)) return [];
+  return rows.map((row) => ({
+    chunk_text: row.chunk_text,
+    chunk_index: row.chunk_index,
+    citation: {
+      title: row.instrument_title ?? "",
+      source_url: row.source_url ?? "",
+      published_date: row.published_date ?? "",
+      effective_date: row.effective_date ?? null,
+      status: row.status ?? "VIGENTE",
+      type: row.instrument_type,
+      number: row.instrument_number ?? null,
+      gazette_ref: row.gazette_ref ?? null,
+      canonical_key: row.canonical_key ?? undefined,
+    },
+  }));
+}
+
+/**
  * Contexto formateado para el prompt: encabezado por versión (metadata verificada) + chunks + aviso.
  * Incluye title, type/number, published_date, effective_date (si existe), source_url, gazette_ref (si existe).
  */

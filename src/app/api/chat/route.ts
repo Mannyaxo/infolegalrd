@@ -4,6 +4,7 @@ import {
   embedQuery,
   retrieveVigenteChunks,
   retrieveVigenteChunksWithEmbedding,
+  retrieveVigenteChunksByCanonicalKey,
   formatVigenteContext,
   formatMaxReliabilityContext,
   type VigenteChunk,
@@ -549,6 +550,28 @@ export async function POST(request: NextRequest) {
       ragError = e instanceof Error ? e : new Error(String(e));
       console.error("[RAG] retrieveVigenteChunks failed:", ragError.message, ragError);
     }
+
+    // Si el usuario pide una ley concreta (ley 590-16), traer chunks de esa ley por canonical_key
+    // para que aparezca aunque la búsqueda semántica no la rankee alto (ej. ya ingestada por enrich)
+    const askedLaw = message.match(/ley\s*(\d{2,3}-\d{2})/i);
+    const askedCanonical = askedLaw ? `LEY-${askedLaw[1]}` : null;
+    if (askedCanonical) {
+      try {
+        const byCanonical = await retrieveVigenteChunksByCanonicalKey(askedCanonical, RAG_TOP_K);
+        if (byCanonical.length > 0) {
+          const seen = new Set<string>();
+          for (const c of byCanonical) {
+            seen.add(`${c.citation.source_url ?? ""}|${c.chunk_index}`);
+          }
+          const rest = chunks.filter((c) => !seen.has(`${c.citation.source_url ?? ""}|${c.chunk_index}`));
+          chunks = [...byCanonical, ...rest].slice(0, RAG_TOP_K);
+          console.log("[DEBUG] Chunks tras merge por ley solicitada:", askedCanonical, "total:", chunks.length);
+        }
+      } catch (e) {
+        console.warn("[RAG] retrieveVigenteChunksByCanonicalKey failed:", e);
+      }
+    }
+
     console.log("[DEBUG] Chunks recuperados:", chunks.length);
     if (chunks.length < 4) {
       console.log("[DEBUG] Encolando por falta de chunks suficientes");
@@ -560,8 +583,6 @@ export async function POST(request: NextRequest) {
       });
     }
 
-    const askedLaw = message.match(/ley\s*(\d{2,3}-\d{2})/i);
-    const askedCanonical = askedLaw ? `LEY-${askedLaw[1]}` : null;
     const hasTheExactLaw = chunks.some(
       (c) =>
         c.citation.canonical_key === askedCanonical ||
