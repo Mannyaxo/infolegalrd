@@ -72,9 +72,42 @@ async function processOne(
 
   await updateStatus("FETCHING");
 
-  let best: { url: string; title: string; markdown: string } | null;
+  let best: { url: string; title: string; markdown: string } | null = null;
+  const lawMatch = row.query.match(/ley\s*(\d{2,3}-\d{2})/i);
+
   try {
-    best = await searchAndDownloadLaw(row.query, firecrawlKey);
+    // Si la consulta pide una ley concreta (ley 10-07), buscar primero ESA ley como documento principal
+    if (lawMatch) {
+      const lawNum = lawMatch[1];
+      const expectedLeyKey = `LEY-${lawNum}`;
+      const candidates = await searchAndDownloadLawCandidates(`Ley ${lawNum}`, firecrawlKey, 5);
+      for (const c of candidates) {
+        const { canonical_key: cKey } = deriveCanonicalFromTitle(c.title, c.url);
+        if (cKey !== expectedLeyKey) continue; // priorizar el doc que sea la ley, no un decreto/resolución
+        const ver = await verifyWithMultipleAIs(c.markdown, c.title, row.query, {
+          openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+        });
+        if (ver.verified) {
+          best = c;
+          break;
+        }
+      }
+      // Si no encontramos un doc con canonical_key LEY-XX-XX, tomar el primero que pase verificación
+      if (!best && candidates.length > 0) {
+        for (const c of candidates) {
+          const ver = await verifyWithMultipleAIs(c.markdown, c.title, row.query, {
+            openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+          });
+          if (ver.verified) {
+            best = c;
+            break;
+          }
+        }
+      }
+    }
+    if (!best) {
+      best = await searchAndDownloadLaw(row.query, firecrawlKey);
+    }
   } catch (e) {
     const errMsg = e instanceof Error ? e.message : String(e);
     await updateStatus("FAILED", { error: errMsg });
@@ -155,8 +188,14 @@ async function processOne(
   });
 
   if (result.ok) {
-    const meta: Record<string, unknown> = { ...(row.meta || {}), versionId: result.versionId, chunksCount: result.chunksCount };
-    let reglamentosIngested = 0;
+    const meta: Record<string, unknown> = {
+      ...(row.meta || {}),
+      versionId: result.versionId,
+      chunksCount: result.chunksCount,
+      ingestedMain: { canonical_key: canonical_key, title: best.title, source_url: best.url, chunksCount: result.chunksCount },
+    };
+    const ingestedReglamentos: Array<{ canonical_key: string; title: string }> = [];
+    const ingestedResoluciones: Array<{ canonical_key: string; title: string }> = [];
 
     // Si la consulta menciona una ley (ej. ley 10-07), buscar e ingestar reglamentos asociados
     const lawMatch = row.query.match(/ley\s*(\d{2,3}-\d{2})/i);
@@ -196,17 +235,16 @@ async function processOne(
             canonicalKey: regKey,
           });
           if (regResult.ok) {
-            reglamentosIngested++;
+            ingestedReglamentos.push({ canonical_key: regKey, title: reg.title });
             console.log("   Reglamento ingerido:", regKey, reg.title.slice(0, 50));
           }
         }
       } catch (e) {
         console.warn("   Error buscando reglamentos:", e instanceof Error ? e.message : String(e));
       }
-      if (reglamentosIngested > 0) meta.reglamentosIngested = reglamentosIngested;
+      if (ingestedReglamentos.length > 0) meta.ingestedReglamentos = ingestedReglamentos;
 
       // Resoluciones asociadas a la ley (más data)
-      let resolucionesIngested = 0;
       try {
         const resoluciones = await searchAndDownloadLawCandidates(
           `resolucion ley ${lawNum}`,
@@ -241,14 +279,14 @@ async function processOne(
             canonicalKey: resKey,
           });
           if (resResult.ok) {
-            resolucionesIngested++;
+            ingestedResoluciones.push({ canonical_key: resKey, title: res.title });
             console.log("   Resolución ingerida:", resKey, res.title.slice(0, 50));
           }
         }
       } catch (e) {
         console.warn("   Error buscando resoluciones:", e instanceof Error ? e.message : String(e));
       }
-      if (resolucionesIngested > 0) meta.resolucionesIngested = resolucionesIngested;
+      if (ingestedResoluciones.length > 0) meta.ingestedResoluciones = ingestedResoluciones;
     }
 
     await updateStatus("INGESTED", { meta });
