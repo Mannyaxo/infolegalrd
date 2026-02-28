@@ -4,11 +4,12 @@ import { useState, useRef, useEffect } from "react";
 import { useSupabase } from "@/components/providers/SupabaseProvider";
 import { useAuth } from "@/hooks/useAuth";
 import { LegalResponse } from "@/components/chat/LegalResponse";
+import { SourcesPanel, type SourceItem } from "@/components/chat/SourcesPanel";
 
 type QueryPanelProps = { suggestedQuery?: string | null; onSuggestionApplied?: () => void };
 
 type ApiResponse =
-  | { type: "answer"; content: string; note?: string }
+  | { type: "answer"; content: string; note?: string; sources?: SourceItem[] }
   | { type: "clarify"; questions: string[] }
   | { type: "reject"; message: string };
 
@@ -30,6 +31,7 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
   const [loading, setLoading] = useState(false);
   const [response, setResponse] = useState<"idle" | "answer" | "clarify" | "reject">("idle");
   const [content, setContent] = useState("");
+  const [sources, setSources] = useState<SourceItem[]>([]);
   const [clarifyQuestions, setClarifyQuestions] = useState<string[]>([]);
   const [rejectMessage, setRejectMessage] = useState("");
   const [lastQuery, setLastQuery] = useState("");
@@ -66,6 +68,7 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
     setLoading(true);
     setResponse("idle");
     setContent("");
+    setSources([]);
     setClarifyQuestions([]);
     setRejectMessage("");
     panelRef.current?.scrollIntoView({ behavior: "smooth", block: "center" });
@@ -103,6 +106,7 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
         setResponse("answer");
         const answerContent = data.content ?? "";
         setContent(answerContent);
+        setSources(Array.isArray(data.sources) ? data.sources : []);
         setLastQuery(text);
         setLastResponse(answerContent);
         setLastMode(maxReliability ? "max-reliability" : "standard");
@@ -258,9 +262,12 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
               </>
             )}
             {!loading && response === "answer" && content && (
-              <div className="prose prose-invert max-w-none" style={{ color: "var(--off-white)" }}>
-                <LegalResponse content={content} />
-              </div>
+              <>
+                <div className="prose prose-invert max-w-none" style={{ color: "var(--off-white)" }}>
+                  <LegalResponse content={content} />
+                </div>
+                {sources.length > 0 && <SourcesPanel sources={sources} />}
+              </>
             )}
           </div>
         </div>

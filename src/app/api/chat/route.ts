@@ -22,8 +22,18 @@ type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
 type RejectResponse = { type: "reject"; message: string };
 type ClarifyResponse = { type: "clarify"; questions: string[] };
-type AnswerResponse = { type: "answer"; content: string; note?: string };
+export type RagSourceItem = { title: string; source_url: string; similarity?: number; textPreview: string };
+type AnswerResponse = { type: "answer"; content: string; note?: string; sources?: RagSourceItem[] };
 type ChatResponse = RejectResponse | ClarifyResponse | AnswerResponse;
+
+function buildSourcesFromChunks(chunks: VigenteChunk[], maxPreview = 220): RagSourceItem[] {
+  return chunks.slice(0, 10).map((c) => ({
+    title: c.citation.title ?? "",
+    source_url: c.citation.source_url ?? "",
+    similarity: c.similarity,
+    textPreview: c.chunk_text.slice(0, maxPreview) + (c.chunk_text.length > maxPreview ? "…" : ""),
+  }));
+}
 
 const ADVERTENCIA_FINAL_EXACTA =
   "Este análisis es orientativo y se basa únicamente en la información proporcionada de forma genérica. No constituye asesoramiento legal vinculante, no crea relación abogado-cliente y no sustituye la consulta con un abogado colegiado. Se recomienda encarecidamente acudir a un profesional habilitado para evaluar su caso concreto.";
@@ -751,6 +761,8 @@ export async function POST(request: NextRequest) {
       }
 
       const payload = result.payload;
+      const maxSources = mrChunks.length > 0 ? buildSourcesFromChunks(mrChunks) : undefined;
+      const payloadWithSources = maxSources ? { ...payload, sources: maxSources } : payload;
       try {
         if (supabase) {
           await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
@@ -768,7 +780,7 @@ export async function POST(request: NextRequest) {
       } catch {
         // no bloquear respuesta por fallo de log
       }
-      return NextResponse.json(payload, { status: 200 });
+      return NextResponse.json(payloadWithSources, { status: 200 });
     }
 
     // Modo normal sin chunks: encolar para auto-enriquecimiento y pedir volver en 5-10 min
@@ -1112,7 +1124,8 @@ export async function POST(request: NextRequest) {
     final = DISCLAIMER_PREFIX + final;
 
     console.log("Resumen final: Total agentes contribuyentes: " + successCount + "/5");
-    return NextResponse.json({ type: "answer", content: final, note } satisfies ChatResponse, { status: 200 });
+    const sources = chunks.length > 0 ? buildSourcesFromChunks(chunks) : undefined;
+    return NextResponse.json({ type: "answer", content: final, note, sources } satisfies ChatResponse, { status: 200 });
   } catch (err) {
     const error = err instanceof Error ? err : new Error(String(err));
     console.error(error);

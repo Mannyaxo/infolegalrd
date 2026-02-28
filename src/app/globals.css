@@ -508,8 +508,9 @@ body {
   margin: 0 28px 20px;
   background: var(--bg3);
   border: 1px solid var(--border);
-  border-radius: 10px;
+  border-radius: 12px;
   overflow: hidden;
+  box-shadow: 0 4px 24px rgba(0,0,0,0.2);
 }
 
 .page-v2 .qp-response-head {
@@ -530,6 +531,14 @@ body {
   color: var(--muted);
   line-height: 1.8;
   white-space: pre-wrap;
+}
+
+.page-v2 .sources-panel li button:hover {
+  background: rgba(255,255,255,0.03);
+}
+.page-v2 .sources-panel li:focus-within {
+  border-color: var(--sage);
+  box-shadow: 0 0 0 1px rgba(143,172,126,0.2);
 }
 
 .page-v2 .loading-dots span {

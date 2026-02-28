@@ -22,6 +22,8 @@ export type VigenteChunk = {
   chunk_text: string;
   chunk_index: number;
   citation: VigenteCitation;
+  /** Similitud coseno (0-1) cuando viene del RPC match_vigente_chunks. */
+  similarity?: number;
 };
 
 type MatchVigenteRow = {
@@ -38,6 +40,7 @@ type MatchVigenteRow = {
   source_url: string;
   gazette_ref: string | null;
   canonical_key: string;
+  similarity?: number;
 };
 
 /** Genera embedding del query para RAG (OpenAI text-embedding-3-small, 1536 dims). */
@@ -45,20 +48,30 @@ export async function embedQuery(text: string): Promise<number[]> {
   return getEmbedding(text);
 }
 
+/** Umbral de similitud por defecto: chunks por debajo se descartan (menos ruido). */
+const DEFAULT_MATCH_THRESHOLD = 0.65;
+
 /**
  * Recupera topK chunks de instrumentos VIGENTES por embedding (cosine similarity).
- * Para modo max-reliability: usar con embedQuery(query).
+ * matchThreshold opcional: solo devuelve chunks con similitud >= umbral (p. ej. 0.65).
  */
 export async function retrieveVigenteChunksWithEmbedding(
   supabase: SupabaseClient,
   embedding: number[],
-  topK: number = 6
+  topK: number = 6,
+  matchThreshold: number | null = DEFAULT_MATCH_THRESHOLD
 ): Promise<VigenteChunk[]> {
   if (embedding.length === 0) return [];
 
+  const params: { query_embedding: number[]; match_count: number; match_threshold?: number | null } = {
+    query_embedding: embedding,
+    match_count: topK,
+  };
+  if (matchThreshold != null) params.match_threshold = matchThreshold;
+
   const { data: rows, error } = await (supabase as unknown as { rpc(n: string, p: object): Promise<{ data: MatchVigenteRow[] | null; error: { message?: string; details?: string } | null }> }).rpc(
     "match_vigente_chunks",
-    { query_embedding: embedding, match_count: topK }
+    params
   );
 
   if (error) {
@@ -82,17 +95,23 @@ export async function retrieveVigenteChunksWithEmbedding(
       gazette_ref: row.gazette_ref ?? null,
       canonical_key: row.canonical_key ?? undefined,
     },
+    similarity: row.similarity != null ? Number(row.similarity) : undefined,
   }));
 }
 
 /**
  * Recupera topK chunks relevantes (por query string). Usa getSupabaseServer + embedQuery internamente.
+ * matchThreshold: solo chunks con similitud >= umbral (default 0.65). Pasar null para no filtrar.
  */
-export async function retrieveVigenteChunks(query: string, topK: number = 6): Promise<VigenteChunk[]> {
+export async function retrieveVigenteChunks(
+  query: string,
+  topK: number = 6,
+  matchThreshold: number | null = DEFAULT_MATCH_THRESHOLD
+): Promise<VigenteChunk[]> {
   const supabase = getSupabaseServer();
   if (!supabase) return [];
   const embedding = await embedQuery(query);
-  return retrieveVigenteChunksWithEmbedding(supabase, embedding, topK);
+  return retrieveVigenteChunksWithEmbedding(supabase, embedding, topK, matchThreshold);
 }
 
 /**

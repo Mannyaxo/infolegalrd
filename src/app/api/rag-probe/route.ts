@@ -58,6 +58,7 @@ export async function POST(request: NextRequest) {
       source_url: c.citation.source_url ?? "",
       canonical_key: c.citation.canonical_key ?? null,
       chunk_index: c.chunk_index,
+      similarity: c.similarity,
       textPreview: c.chunk_text.slice(0, PREVIEW_LEN) + (c.chunk_text.length > PREVIEW_LEN ? "…" : ""),
     }));
 
