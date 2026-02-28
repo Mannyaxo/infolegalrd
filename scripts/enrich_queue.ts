@@ -1,6 +1,6 @@
 /**
- * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → verificación OpenAI → ingest ley + reglamentos).
- * Busca en consultoria.gov.do y gacetaoficial.gob.do; verifica solo con OpenAI; si hay ley XX-XX, busca e ingesta reglamentos también.
+ * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → verificación OpenAI → ingest ley + reglamentos + resoluciones).
+ * Busca en consultoria.gov.do y gacetaoficial.gob.do; verifica solo con OpenAI; si hay ley XX-XX, busca e ingesta reglamentos y resoluciones también.
  *
  * Uso: npm run enrich:queue [-- --once] [--limit N] [--dry-run] [--force]
  * Env: FIRECRAWL_API_KEY, SUPABASE_*, OPENAI_API_KEY
@@ -204,6 +204,51 @@ async function processOne(
         console.warn("   Error buscando reglamentos:", e instanceof Error ? e.message : String(e));
       }
       if (reglamentosIngested > 0) meta.reglamentosIngested = reglamentosIngested;
+
+      // Resoluciones asociadas a la ley (más data)
+      let resolucionesIngested = 0;
+      try {
+        const resoluciones = await searchAndDownloadLawCandidates(
+          `resolucion ley ${lawNum}`,
+          firecrawlKey,
+          5
+        );
+        for (const res of resoluciones) {
+          const verRes = await verifyWithMultipleAIs(res.markdown, res.title, `resolucion ley ${lawNum}`, {
+            openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+          });
+          if (!verRes.verified) continue;
+          const resText = normalizeText(res.markdown);
+          const resHash = sha256(resText);
+          const { canonical_key: resKey, type: resType, number: resNumber } = deriveCanonicalFromTitle(res.title, res.url);
+          const resPublished = extractPublishedDate(res.markdown, undefined) ?? new Date().toISOString().slice(0, 10);
+          const { data: existingRes } = await supabase
+            .from("instrument_versions")
+            .select("id")
+            .eq("content_hash", resHash)
+            .limit(1)
+            .maybeSingle();
+          if (existingRes?.id && !force) continue;
+          const resUpsert = await upsertInstrument(supabase, resKey, res.title, resType, resNumber);
+          if ("error" in resUpsert) continue;
+          const resResult = await ingestVersionAndChunks(supabase, openai, {
+            instrumentId: resUpsert.instrumentId,
+            sourceId,
+            sourceUrl: res.url,
+            contentText: resText,
+            contentHash: resHash,
+            publishedDate: resPublished,
+            canonicalKey: resKey,
+          });
+          if (resResult.ok) {
+            resolucionesIngested++;
+            console.log("   Resolución ingerida:", resKey, res.title.slice(0, 50));
+          }
+        }
+      } catch (e) {
+        console.warn("   Error buscando resoluciones:", e instanceof Error ? e.message : String(e));
+      }
+      if (resolucionesIngested > 0) meta.resolucionesIngested = resolucionesIngested;
     }
 
     await updateStatus("INGESTED", { meta });
