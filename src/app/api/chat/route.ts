@@ -11,7 +11,12 @@ import {
 } from "@/lib/rag/vigente";
 import { getSupabaseServer } from "@/lib/supabase/server";
 import { enqueueForEnrichment } from "@/lib/enrichment/enqueue";
-import { verifyAnswerClaims } from "@/lib/claim-verification";
+import { verifyAnswerClaims, stripUnverifiedArticlesAndAddCaveat } from "@/lib/claim-verification";
+import {
+  runMaxReliabilityPipeline,
+  type MaxReliabilityCitation,
+  type MaxReliabilityPipelineResult,
+} from "@/lib/max-reliability-pipeline";
 
 type ChatHistoryMessage = { role: "user" | "assistant"; content: string };
 
@@ -415,80 +420,6 @@ const MAX_RELIABILITY_DISCLAIMER =
 /** topK para RAG en ambos modos (siempre retrieval con match_vigente_chunks). */
 const RAG_TOP_K = 8;
 
-type MaxReliabilityCitation = {
-  instrument: string;
-  type: string;
-  number: string | null;
-  published_date: string;
-  status: string;
-  source_url: string;
-  chunk_index: number;
-};
-
-type MaxReliabilityPayload = {
-  decision: "APPROVE" | "NEED_MORE_INFO" | "NO_EVIDENCE" | "UNVERIFIED_CITATION";
-  confidence: number;
-  answer: string;
-  missing_info_questions?: string[];
-  caveats?: string[];
-  next_steps?: string[];
-  citations?: MaxReliabilityCitation[];
-};
-
-/** Extrae menciones de artículos (art, art., artículo(s)) para post-check. */
-function extractArticleMentions(text: string): string[] {
-  const normalized = text.replace(/\s+/g, " ");
-  const patterns = [/art\.?\s*\d+/gi, /artículo?s?\s*\d+/gi];
-  const out: string[] = [];
-  for (const re of patterns) {
-    const matches = Array.from(normalized.matchAll(re));
-    for (const m of matches) {
-      out.push(m[0].toLowerCase().replace(/\s+/g, " "));
-    }
-  }
-  return Array.from(new Set(out));
-}
-
-/** Verifica que cada mención de artículo aparezca literalmente en el texto de los chunks (case-insensitive). */
-function allArticleMentionsInText(mentions: string[], chunkText: string): boolean {
-  const lower = chunkText.toLowerCase();
-  for (const m of mentions) {
-    if (!m) continue;
-    if (!lower.includes(m.toLowerCase())) return false;
-  }
-  return true;
-}
-
-/** Obtiene las menciones de artículos que NO aparecen en el texto de los chunks. */
-function getUnverifiedArticleMentions(answerText: string, allChunkText: string): string[] {
-  const mentions = extractArticleMentions(answerText);
-  if (mentions.length === 0) return [];
-  const lower = allChunkText.toLowerCase();
-  return mentions.filter((m) => m && !lower.includes(m.toLowerCase()));
-}
-
-/**
- * Post-check anti-alucinación: elimina de la respuesta las partes que citan artículos
- * no presentes en los chunks y añade caveat.
- */
-function stripUnverifiedArticlesAndAddCaveat(answerText: string, allChunkText: string): {
-  cleaned: string;
-  caveat: string;
-} {
-  const unverified = getUnverifiedArticleMentions(answerText, allChunkText);
-  if (unverified.length === 0) return { cleaned: answerText, caveat: "" };
-  const caveat =
-    "No verificado en fuentes cargadas: " + unverified.join(", ") + ".";
-  const unverifiedLower = unverified.map((u) => u.toLowerCase());
-  const sentences = answerText.split(/(?<=[.!?])\s+/);
-  const kept = sentences.filter((s) => {
-    const low = s.toLowerCase();
-    return !unverifiedLower.some((u) => low.includes(u));
-  });
-  const cleaned = kept.join(" ").replace(/\s+/g, " ").trim();
-  return { cleaned, caveat };
-}
-
 export async function POST(request: NextRequest) {
   try {
     const body = (await request.json().catch(() => ({}))) as {
@@ -689,21 +620,35 @@ export async function POST(request: NextRequest) {
       console.log("[max-reliability] chunks=", mrChunks.length, "ctxChars=", contextText.length);
       console.log("[max-reliability] timeoutMs=", MAX_RELIABILITY_AGENT_TIMEOUT_MS, "max_tokens=", MR_MAX_TOKENS);
 
-      let modelRaw: string;
+      const pipelineInput = {
+        systemPrompt: maxReliabilitySystem,
+        userPrompt: maxReliabilityUser,
+        callModel: (system: string, user: string) =>
+          withTimeout(
+            (signal) =>
+              callClaudeWithFallback({
+                apiKey: anthropicKey,
+                system,
+                user,
+                max_tokens: MR_MAX_TOKENS,
+                temperature: 0,
+                signal,
+              }),
+            MAX_RELIABILITY_AGENT_TIMEOUT_MS,
+            "max-reliability"
+          ),
+        chunks: mrChunks,
+        contextText,
+        allChunkText,
+        allowedSourceUrls,
+        ragCitations,
+        disclaimerPrefix: DISCLAIMER_PREFIX,
+        maxReliabilityDisclaimer: MAX_RELIABILITY_DISCLAIMER,
+      };
+
+      let result: MaxReliabilityPipelineResult;
       try {
-        modelRaw = await withTimeout(
-          (signal) =>
-            callClaudeWithFallback({
-              apiKey: anthropicKey,
-              system: maxReliabilitySystem,
-              user: maxReliabilityUser,
-              max_tokens: MR_MAX_TOKENS,
-              temperature: 0,
-              signal,
-            }),
-          MAX_RELIABILITY_AGENT_TIMEOUT_MS,
-          "max-reliability"
-        );
+        result = await runMaxReliabilityPipeline(pipelineInput);
       } catch (e) {
         const errMsg = e instanceof Error ? e.message : String(e);
         console.error("[max-reliability] Modelo falló:", errMsg);
@@ -714,7 +659,7 @@ export async function POST(request: NextRequest) {
             `Consulta del usuario:\n${effectiveMessage}\n\n` +
             `CONTEXTO (recortado):\n${shortCtx}\n\nResponde ÚNICAMENTE con el JSON del schema (decision, confidence, answer, missing_info_questions, caveats, next_steps, citations).`;
           try {
-            modelRaw = await withTimeout(
+            const modelRawRetry = await withTimeout(
               (signal) =>
                 callClaudeWithFallback({
                   apiKey: anthropicKey,
@@ -727,11 +672,16 @@ export async function POST(request: NextRequest) {
               15000,
               "max-reliability-retry"
             );
+            result = await runMaxReliabilityPipeline({
+              ...pipelineInput,
+              userPrompt: shortUser,
+              initialModelRaw: modelRawRetry,
+            });
           } catch (retryErr) {
             const openaiKey = process.env.OPENAI_API_KEY;
             if (openaiKey) {
               try {
-                modelRaw = await callOpenAIStyle({
+                const modelRawOpenAI = await callOpenAIStyle({
                   provider: "OpenAI-fallback",
                   url: OPENAI_URL,
                   apiKey: openaiKey,
@@ -740,6 +690,11 @@ export async function POST(request: NextRequest) {
                   user: shortUser,
                   max_tokens: 1200,
                   temperature: 0,
+                });
+                result = await runMaxReliabilityPipeline({
+                  ...pipelineInput,
+                  userPrompt: shortUser,
+                  initialModelRaw: modelRawOpenAI,
                 });
               } catch (openaiErr) {
                 console.error("[max-reliability] fallback OpenAI falló:", openaiErr);
@@ -751,90 +706,43 @@ export async function POST(request: NextRequest) {
           }
         } else {
           const fallbackPayload = {
-          ok: true as const,
-          mode: "max-reliability" as const,
-          decision: "NO_EVIDENCE" as const,
-          confidence: 0.85,
-          answer: "No se pudo generar una respuesta verificable. El modelo no respondió correctamente.",
-          citations: [] as MaxReliabilityCitation[],
-          caveats: ["Error al invocar el modelo; no se emitió criterio."],
-          next_steps: ["Vuelve a intentar en unos momentos."],
-        };
-        try {
-          if (supabase) {
-            await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
-              user_id: body.userId ?? null,
-              mode: "max-reliability",
-              query: message,
-              decision: "NO_EVIDENCE",
-              confidence: 0.85,
-              citations: [],
-              model_used: { error: "model_failed" },
-              tokens_in: null,
-              tokens_out: null,
-            });
+            ok: true as const,
+            mode: "max-reliability" as const,
+            decision: "NO_EVIDENCE" as const,
+            confidence: 0.85,
+            answer: "No se pudo generar una respuesta verificable. El modelo no respondió correctamente.",
+            citations: [] as MaxReliabilityCitation[],
+            caveats: ["Error al invocar el modelo; no se emitió criterio."],
+            next_steps: ["Vuelve a intentar en unos momentos."],
+          };
+          try {
+            if (supabase) {
+              await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
+                user_id: body.userId ?? null,
+                mode: "max-reliability",
+                query: message,
+                decision: "NO_EVIDENCE",
+                confidence: 0.85,
+                citations: [],
+                model_used: { error: "model_failed" },
+                tokens_in: null,
+                tokens_out: null,
+              });
+            }
+          } catch {
+            // no bloquear
           }
-        } catch {
-          // no bloquear
-        }
-        return NextResponse.json(fallbackPayload, { status: 200 });
+          return NextResponse.json(fallbackPayload, { status: 200 });
         }
       }
 
-      let parsed = extractJson<MaxReliabilityPayload>(modelRaw) ?? safeJsonParse<MaxReliabilityPayload>(modelRaw);
-      if (!parsed || typeof parsed !== "object") {
-        parsed = {
-          decision: "NO_EVIDENCE",
-          confidence: 0.85,
-          answer: "La respuesta del modelo no fue JSON válido. No se emite criterio para evitar errores.",
-          missing_info_questions: [],
-          caveats: ["Salida del modelo inválida; no se usó."],
-          next_steps: ["Reformula la consulta o intenta de nuevo."],
-          citations: [],
-        };
-      }
-
-      let decision = parsed.decision === "APPROVE" || parsed.decision === "NEED_MORE_INFO" || parsed.decision === "NO_EVIDENCE" || parsed.decision === "UNVERIFIED_CITATION"
-        ? parsed.decision
-        : "NO_EVIDENCE";
-      let confidence = typeof parsed.confidence === "number" ? Math.max(0, Math.min(1, parsed.confidence)) : 0.5;
-      let answer = typeof parsed.answer === "string" ? parsed.answer : "";
-      let missingInfo = Array.isArray(parsed.missing_info_questions) ? parsed.missing_info_questions.filter((q) => typeof q === "string").slice(0, 4) : [];
-      let caveats = Array.isArray(parsed.caveats) ? parsed.caveats.filter((c) => typeof c === "string").slice(0, 5) : [];
-      let nextSteps = Array.isArray(parsed.next_steps) ? parsed.next_steps.filter((s) => typeof s === "string").slice(0, 5) : [];
-      let citations: MaxReliabilityCitation[] = Array.isArray(parsed.citations)
-        ? (parsed.citations as unknown[]).filter(
-            (c): c is MaxReliabilityCitation =>
-              typeof c === "object" &&
-              c !== null &&
-              "instrument" in c &&
-              "source_url" in c &&
-              "chunk_index" in c
-          )
-        : [];
-
-      // Citations reales: solo source_url presentes en chunks
-      citations = citations.filter((c) => allowedSourceUrls.has((c.source_url ?? "").trim()));
-
-      // Si el juez devolvió NEED_MORE_INFO → type "clarify" (no "answer"); máx 4 preguntas concretas
-      if (decision === "NEED_MORE_INFO") {
-        const clarifyQuestions =
-          missingInfo.length > 0
-            ? missingInfo
-            : [
-                "¿La exigencia está por escrito (circular/correo) o solo verbal?",
-                "¿Te han indicado sanciones si no cumples?",
-                "¿Aplica en días libres, vacaciones o ambos?",
-                "¿Tienes documentación (contrato, comunicaciones) que pueda ser relevante?",
-              ];
+      if (result.exit === "clarify") {
         return NextResponse.json(
-          { type: "clarify", questions: clarifyQuestions.slice(0, 4) } satisfies ChatResponse,
+          { type: "clarify", questions: result.questions } satisfies ChatResponse,
           { status: 200 }
         );
       }
-
-      // Sin evidencia o confianza baja: encolar para auto-enriquecimiento y pedir volver en 5-10 min
-      if (decision === "NO_EVIDENCE" || confidence < 0.5) {
+      if (result.exit === "enrichment") {
         await enqueueForEnrichment(message, "max-reliability");
         return NextResponse.json(
           { type: "answer", content: DISCLAIMER_PREFIX + MESSAGE_ENRICHMENT_PENDING } satisfies ChatResponse,
@@ -842,97 +750,7 @@ export async function POST(request: NextRequest) {
         );
       }
 
-      // CAPA 3: Post-check — artículos no verificados: eliminar esa parte y añadir caveat
-      const { cleaned: answerCleaned, caveat: articleCaveat } = stripUnverifiedArticlesAndAddCaveat(answer, allChunkText);
-      if (articleCaveat) {
-        decision = "UNVERIFIED_CITATION";
-        confidence = 0.6;
-        answer = answerCleaned + "\n\n**Nota:** " + articleCaveat;
-        caveats = [...caveats, articleCaveat];
-      } else {
-        answer = answerCleaned;
-      }
-
-      // CAPA 4 (Harvey-style): verificación de claims — afirmaciones legales deben estar respaldadas por chunks
-      const { caveat: claimCaveat } = verifyAnswerClaims(answer, allChunkText);
-      if (claimCaveat) {
-        decision = "UNVERIFIED_CITATION";
-        confidence = Math.min(confidence, 0.65);
-        answer = answer + "\n\n**Nota:** " + claimCaveat;
-        caveats = [...caveats, claimCaveat];
-      }
-
-      // Prohibido "No encontré fuentes" cuando hay contexto: hay chunks y se citan
-      if (mrChunks.length > 0 && /no\s+encontr[eé]\s+fuentes/i.test(answer)) {
-        answer = answer.replace(/\s*[.\s]*(no\s+encontr[eé]\s+fuentes[^.]*)[.]?\s*/gi, " ").replace(/\s+/g, " ").trim();
-      }
-
-      // Evitar respuestas que solo muestran Fuentes: si el cuerpo quedó vacío o muy corto, usar fallback
-      const answerTrimmed = answer.trim();
-      if (answerTrimmed.length < 80) {
-        answer =
-          "No se pudo generar un criterio específico con el contexto recuperado. Consulte las fuentes verificadas más abajo; si lo desea, reformule su consulta con más detalle o use el modo Normal para orientación general.";
-      }
-
-      const finalCitationsForLog = citations.map((c) => ({
-        title: c.instrument,
-        source_url: c.source_url,
-        published_date: c.published_date,
-        status: c.status,
-      }));
-
-      // Fuentes: si el modelo no devolvió citas, usar siempre las de los chunks enviados (evita "sin fuentes" con RAG lleno)
-      const fuentesFromChunks = (() => {
-        const seen = new Set<string>();
-        const out: { title: string; source_url: string; published_date: string; status: string; canonical_key?: string }[] = [];
-        for (const c of mrChunks) {
-          const key = `${c.citation.title}|${c.citation.source_url}|${c.citation.published_date}`;
-          if (!seen.has(key)) {
-            seen.add(key);
-            out.push({
-              title: c.citation.title ?? "",
-              source_url: c.citation.source_url ?? "",
-              published_date: c.citation.published_date ?? "",
-              status: c.citation.status ?? "VIGENTE",
-              canonical_key: c.citation.canonical_key,
-            });
-          }
-        }
-        return out;
-      })();
-      const fuentesToShow = finalCitationsForLog.length > 0 ? finalCitationsForLog : fuentesFromChunks;
-
-      let answerWithDisclaimer = `${MAX_RELIABILITY_DISCLAIMER}\n\n${answer}`;
-      if (ragCitations.length > 0) {
-        const fuentesLines = ragCitations.map(
-          (c) => `- ${c.title} | ${c.published_date ?? ""} | ${c.status} | ${c.source_url}`
-        );
-        answerWithDisclaimer += `\n\n---\n**Fuentes verificadas:**\n${fuentesLines.join("\n")}`;
-      } else {
-        answerWithDisclaimer += "\n\n**Nota:** No encontré fuentes vigentes para citar artículos específicos.";
-      }
-
-      const citationsForPayload = (ragCitations.length > 0 ? ragCitations : fuentesToShow).map((c) => ({
-        title: c.title,
-        source_url: c.source_url,
-        published_date: c.published_date,
-        status: c.status,
-      }));
-
-      const payload = {
-        type: "answer" as const,
-        content: DISCLAIMER_PREFIX + answerWithDisclaimer,
-        mode: "max-reliability" as const,
-        ok: true as const,
-        decision,
-        answer: answerWithDisclaimer,
-        questions: missingInfo,
-        confidence,
-        caveats,
-        next_steps: nextSteps,
-        citations: citationsForPayload,
-      };
-
+      const payload = result.payload;
       try {
         if (supabase) {
           await (supabase as unknown as { from: (t: string) => { insert: (r: object) => Promise<unknown> } }).from("legal_audit_log").insert({
@@ -941,7 +759,7 @@ export async function POST(request: NextRequest) {
             query: message,
             decision: payload.decision,
             confidence: payload.confidence,
-            citations: citationsForPayload,
+            citations: payload.citations,
             model_used: { judge: "claude" },
             tokens_in: null,
             tokens_out: null,

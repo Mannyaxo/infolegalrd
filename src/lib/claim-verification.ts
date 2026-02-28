@@ -92,3 +92,47 @@ export function verifyAnswerClaims(answerText: string, allChunkText: string): {
       : "";
   return { unverifiedClaims: unverified, caveat };
 }
+
+// --- Post-check: artículos no verificados (eliminar de la respuesta y añadir caveat) ---
+
+function extractArticleMentions(text: string): string[] {
+  const normalized = text.replace(/\s+/g, " ");
+  const patterns = [/art\.?\s*\d+/gi, /artículo?s?\s*\d+/gi];
+  const out: string[] = [];
+  for (const re of patterns) {
+    const matches = Array.from(normalized.matchAll(re));
+    for (const m of matches) {
+      out.push(m[0].toLowerCase().replace(/\s+/g, " "));
+    }
+  }
+  return Array.from(new Set(out));
+}
+
+function getUnverifiedArticleMentions(answerText: string, allChunkText: string): string[] {
+  const mentions = extractArticleMentions(answerText);
+  if (mentions.length === 0) return [];
+  const lower = allChunkText.toLowerCase();
+  return mentions.filter((m) => m && !lower.includes(m.toLowerCase()));
+}
+
+/**
+ * Post-check anti-alucinación: elimina de la respuesta las partes que citan artículos
+ * no presentes en los chunks y añade caveat.
+ */
+export function stripUnverifiedArticlesAndAddCaveat(answerText: string, allChunkText: string): {
+  cleaned: string;
+  caveat: string;
+} {
+  const unverified = getUnverifiedArticleMentions(answerText, allChunkText);
+  if (unverified.length === 0) return { cleaned: answerText, caveat: "" };
+  const caveat =
+    "No verificado en fuentes cargadas: " + unverified.join(", ") + ".";
+  const unverifiedLower = unverified.map((u) => u.toLowerCase());
+  const sentences = answerText.split(/(?<=[.!?])\s+/);
+  const kept = sentences.filter((s) => {
+    const low = s.toLowerCase();
+    return !unverifiedLower.some((u) => low.includes(u));
+  });
+  const cleaned = kept.join(" ").replace(/\s+/g, " ").trim();
+  return { cleaned, caveat };
+}
