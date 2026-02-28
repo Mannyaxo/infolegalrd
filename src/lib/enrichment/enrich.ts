@@ -8,6 +8,20 @@ const FIRECRAWL_SEARCH_URL = "https://api.firecrawl.dev/v1/search";
 const OFFICIAL_DOMAIN_SUFFIXES = [".gov.do", ".gob.do"];
 const MIN_CONTENT_LENGTH = 200;
 
+/** Excluir portada/homepage de Consultoría para no devolverla como si fuera la ley. */
+function isHomepageOrPortada(url: string, title: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, "") || "/";
+    if (path === "/" || path.toLowerCase() === "/index" || path.toLowerCase() === "/portada") return true;
+  } catch {
+    // ignore
+  }
+  const t = (title || "").toLowerCase();
+  if ((/portada|inicio|home\s*page/i.test(t) && !t.includes("ley")) || t === "consultoría jurídica del poder ejecutivo | portada") return true;
+  return false;
+}
+
 function isOfficialDomain(url: string): boolean {
   try {
     const host = new URL(url).hostname.toLowerCase();
@@ -59,13 +73,11 @@ export async function searchAndDownloadLaw(
   for (const d of data.data) {
     const url = (d.url ?? "").trim();
     if (!url || !isOfficialDomain(url)) continue;
+    const title = (d.title ?? "Sin título").trim();
+    if (isHomepageOrPortada(url, title)) continue;
     const markdown = (d.markdown ?? "").trim();
     if (markdown.length < MIN_CONTENT_LENGTH) continue;
-    return {
-      url,
-      title: (d.title ?? "Sin título").trim(),
-      markdown,
-    };
+    return { url, title, markdown };
   }
   return null;
 }
@@ -106,13 +118,11 @@ export async function searchAndDownloadLawCandidates(
     if (out.length >= maxResults) break;
     const url = (d.url ?? "").trim();
     if (!url || !isOfficialDomain(url)) continue;
+    const title = (d.title ?? "Sin título").trim();
+    if (isHomepageOrPortada(url, title)) continue;
     const markdown = (d.markdown ?? "").trim();
     if (markdown.length < MIN_CONTENT_LENGTH) continue;
-    out.push({
-      url,
-      title: (d.title ?? "Sin título").trim(),
-      markdown,
-    });
+    out.push({ url, title, markdown });
   }
   return out;
 }

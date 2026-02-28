@@ -50,6 +50,20 @@ function parseArgs() {
   return { once, dryRun, force, limit: isNaN(limit) ? 5 : Math.max(1, limit) };
 }
 
+/** Excluir portada/homepage de Consultoría: no ingestar como si fuera la ley. */
+function isHomepageOrPortada(url: string, title: string): boolean {
+  try {
+    const u = new URL(url);
+    const path = u.pathname.replace(/\/$/, "") || "/";
+    if (path === "/" || path.toLowerCase() === "/index" || path.toLowerCase() === "/portada") return true;
+  } catch {
+    // ignore
+  }
+  const t = title.toLowerCase();
+  if ((/portada|inicio|home\s*page/i.test(t) && !t.includes("ley")) || t === "consultoría jurídica del poder ejecutivo | portada") return true;
+  return false;
+}
+
 async function processOne(
   supabase: SupabaseClient,
   openai: OpenAI,
@@ -80,7 +94,8 @@ async function processOne(
     if (lawMatch) {
       const lawNum = lawMatch[1];
       const expectedLeyKey = `LEY-${lawNum}`;
-      const candidates = await searchAndDownloadLawCandidates(`Ley ${lawNum}`, firecrawlKey, 5);
+      let candidates = await searchAndDownloadLawCandidates(`Ley ${lawNum}`, firecrawlKey, 5);
+      candidates = candidates.filter((c) => !isHomepageOrPortada(c.url, c.title));
       for (const c of candidates) {
         const { canonical_key: cKey } = deriveCanonicalFromTitle(c.title, c.url);
         if (cKey !== expectedLeyKey) continue; // priorizar el doc que sea la ley, no un decreto/resolución
@@ -92,9 +107,11 @@ async function processOne(
           break;
         }
       }
-      // Si no encontramos un doc con canonical_key LEY-XX-XX, tomar el primero que pase verificación
+      // Si no hay doc con canonical_key LEY-XX-XX, solo aceptar candidatos que SÍ sean una ley (canonical_key LEY-*), nunca portada
       if (!best && candidates.length > 0) {
         for (const c of candidates) {
+          const { canonical_key: cKey } = deriveCanonicalFromTitle(c.title, c.url);
+          if (!cKey.startsWith("LEY-")) continue;
           const ver = await verifyWithMultipleAIs(c.markdown, c.title, row.query, {
             openaiApiKey: process.env.OPENAI_API_KEY ?? null,
           });

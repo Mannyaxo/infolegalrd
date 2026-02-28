@@ -73,7 +73,7 @@ En **Vercel** las variables requeridas son: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PU
 
 ## Cola de auto-enriquecimiento (corpus_enrichment_queue)
 
-Cuando el RAG no encuentra evidencia (`chunks.length === 0` en modo normal o `retrievedChunks.length === 0` en máxima confiabilidad), `/api/chat` **solo encola** la consulta en `corpus_enrichment_queue`; **nunca** invoca al worker. Un proceso externo ejecuta `npm run enrich:queue` para procesar la cola.
+Cuando el RAG no encuentra evidencia (`chunks.length === 0` en modo normal o `retrievedChunks.length === 0` en máxima confiabilidad), `/api/chat` encola la consulta en `corpus_enrichment_queue` y **dispara automáticamente** el worker (`npm run enrich:queue -- --once --force`) en segundo plano. Para desactivar ese lanzamiento (p. ej. en Vercel si el proceso no llega a completarse): `AUTO_RUN_ENRICH_QUEUE=false`.
 
 **Tabla:** `corpus_enrichment_queue` (migración `20250227000000_corpus_enrichment_queue.sql`).
 
@@ -98,7 +98,7 @@ Si no hay match confiable: `FETCHED_REVIEW` (se guardan `meta.candidates`).
 
 **DEDUP al encolar:** No se inserta si en las últimas 24 h ya existe una fila con `status` en (`PENDING`, `FETCHING`, `FETCHED`, `FETCHED_REVIEW`, `INGESTING`) y la misma query (normalizada).
 
-**Variables de entorno para el worker** `enrich:queue`: `FIRECRAWL_API_KEY`, `SUPABASE_URL` (o `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`.
+**Variables de entorno para el worker** `enrich:queue`: `FIRECRAWL_API_KEY`, `SUPABASE_URL` (o `NEXT_PUBLIC_SUPABASE_URL`), `SUPABASE_SERVICE_ROLE_KEY`, `OPENAI_API_KEY`. Opcional: `AUTO_RUN_ENRICH_QUEUE=false` para no lanzar el worker automáticamente al encolar (por defecto se lanza).
 
 ---
 
