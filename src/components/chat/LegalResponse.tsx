@@ -27,6 +27,9 @@ export function LegalResponse({ content }: { content: string }) {
 const SECTION_HEADINGS = [
   /^(\d+[º.)]\s*)?(Marco\s*Legal|Referencias?\s*Normativas?|Orientaci[oó]n|Conclusi[oó]n|Pr[oó]ximos\s*pasos|Base\s*legal)/i,
   /^(\*\*)([^*]+)(\*\*)\s*$/m,
+  // Estructura API: "1️⃣ CONCLUSIÓN DIRECTA", "2. BASE LEGAL", "**Fuentes verificadas:**"
+  /^.{0,12}(CONCLUSI[OÓ]N\s*DIRECTA|BASE\s*LEGAL|C[OÓ]MO\s*PROCEDER|SI\s*LA\s*INSTITUCI[OÓ]N\s*NO\s*RESPONDE|RIESGOS\s*O\s*PRECAUCIONES|Fuentes\s*verificadas)/i,
+  /^(Conclusi[oó]n\s*directa|Base\s*legal|C[oó]mo\s*proceder|Riesgos\s*o\s*precauciones)/i,
 ];
 
 function splitSections(text: string): { title: string; body: string }[] {
@@ -42,7 +45,7 @@ function splitSections(text: string): { title: string; body: string }[] {
       if (m) {
         if (current) out.push(current);
         current = {
-          title: (m[2] ?? m[0]).trim().replace(/^\d+[º.)]\s*/, ""),
+          title: (m[2] ?? m[1] ?? m[0]).trim().replace(/^\d+[º.)]\s*/, ""),
           body: "",
         };
         matched = true;

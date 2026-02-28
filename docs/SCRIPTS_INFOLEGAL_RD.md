@@ -107,6 +107,7 @@ Si no hay match confiable: `FETCHED_REVIEW` (se guardan `meta.candidates`).
 | Ruta | Método | Descripción |
 |------|--------|-------------|
 | `/api/chat` | POST | Orquestador del chat: RAG (match_vigente_chunks), modos normal y máxima confiabilidad, clarificar, síntesis. Body: `message`, `history`, `userId`, `mode`. El backend acepta aliases de modo: `max-reliability`, `max`, `máxima-confiabilidad`, `maxima`, `alta-confiabilidad`, etc. (se normalizan a isMax para entrar al flujo max-reliability). |
+| `/api/rag-probe` | POST | Prueba de recuperación RAG sin invocar la IA. Misma lógica que chat: `retrieveVigenteChunks` + merge por ley (canonical_key). Body: `{ "message": "consulta" }`. Respuesta: `{ ok, total, chunks: [{ title, source_url, canonical_key, chunk_index, textPreview }], byCanonicalUsed?, askedCanonical? }`. Útil para afinar y depurar el RAG. |
 | `/api/feedback` | POST | Guarda feedback de usuario. Body: `query`, `response`, `feedback`, `timestamp`, `mode`, `userId`. Tabla Supabase: `feedback` (migración `20250222120000_feedback.sql`: columnas `id`, `query`, `response`, `feedback`, `created_at`, `user_id`, `mode`). |
 | `/api/consultas-limit` | GET | Límite freemium. Query: `userId` (opcional). Respuesta: `{ permitido: boolean, usadas: number, limite: number }`. Si falta `userId` devuelve permitido true, usadas 0, limite 5. |
 | `/api/consultas-limit` | POST | Incrementa contador de consultas. Body: `{ userId: string }`. Respuesta: `{ ok: boolean }`. |

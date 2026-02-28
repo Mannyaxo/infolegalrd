@@ -3,6 +3,7 @@
 import { useState, useRef, useEffect } from "react";
 import { useSupabase } from "@/components/providers/SupabaseProvider";
 import { useAuth } from "@/hooks/useAuth";
+import { LegalResponse } from "@/components/chat/LegalResponse";
 
 type QueryPanelProps = { suggestedQuery?: string | null; onSuggestionApplied?: () => void };
 
@@ -37,6 +38,15 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
   const [feedbackText, setFeedbackText] = useState("");
   const [feedbackSending, setFeedbackSending] = useState(false);
   const [feedbackSent, setFeedbackSent] = useState(false);
+  const [ragProbeQuery, setRagProbeQuery] = useState("");
+  const [ragProbeLoading, setRagProbeLoading] = useState(false);
+  const [ragProbeResult, setRagProbeResult] = useState<{
+    total: number;
+    chunks: Array<{ title: string; source_url: string; canonical_key: string | null; chunk_index: number; textPreview: string }>;
+    byCanonicalUsed?: boolean;
+    askedCanonical?: string;
+  } | null>(null);
+  const [ragProbeError, setRagProbeError] = useState<string | null>(null);
   const panelRef = useRef<HTMLDivElement>(null);
   const supabase = useSupabase();
   const { user } = useAuth(supabase);
@@ -103,6 +113,40 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
       setRejectMessage("Error de conexión. Intenta de nuevo.");
     } finally {
       setLoading(false);
+    }
+  };
+
+  const runRagProbe = async () => {
+    const q = (ragProbeQuery || input).trim();
+    if (!q || ragProbeLoading) return;
+    setRagProbeLoading(true);
+    setRagProbeError(null);
+    setRagProbeResult(null);
+    try {
+      const res = await fetch("/api/rag-probe", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ message: q }),
+      });
+      const data = await res.json();
+      if (!res.ok) {
+        setRagProbeError(data.error ?? "Error al probar RAG");
+        return;
+      }
+      if (data.ok && Array.isArray(data.chunks)) {
+        setRagProbeResult({
+          total: data.total ?? 0,
+          chunks: data.chunks,
+          byCanonicalUsed: data.byCanonicalUsed,
+          askedCanonical: data.askedCanonical,
+        });
+      } else {
+        setRagProbeError("Respuesta inesperada del servidor");
+      }
+    } catch {
+      setRagProbeError("Error de conexión");
+    } finally {
+      setRagProbeLoading(false);
     }
   };
 
@@ -215,11 +259,7 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
             )}
             {!loading && response === "answer" && content && (
               <div className="prose prose-invert max-w-none" style={{ color: "var(--off-white)" }}>
-                {content.split("\n").map((line, i) => (
-                  <p key={i} style={{ marginBottom: 8 }}>
-                    {line}
-                  </p>
-                ))}
+                <LegalResponse content={content} />
               </div>
             )}
           </div>
@@ -272,6 +312,67 @@ export function QueryPanel({ suggestedQuery, onSuggestionApplied }: QueryPanelPr
           ni relación abogado-cliente.
         </div>
       </div>
+
+      <details style={{ margin: "0 28px 20px", padding: "12px", background: "var(--surface)", borderRadius: 8, border: "1px solid var(--border2)" }}>
+        <summary style={{ cursor: "pointer", fontSize: 12, color: "var(--muted)" }}>Probar RAG (recuperación)</summary>
+        <p style={{ marginTop: 8, marginBottom: 8, fontSize: 12, color: "var(--off-white)" }}>
+          Ver qué chunks recupera el RAG para una consulta, sin enviar a la IA. Útil para afinar búsqueda.
+        </p>
+        <div style={{ display: "flex", gap: 8, flexWrap: "wrap", alignItems: "center" }}>
+          <input
+            type="text"
+            placeholder={input || "Escribe una consulta para probar"}
+            value={ragProbeQuery}
+            onChange={(e) => setRagProbeQuery(e.target.value)}
+            style={{
+              flex: 1,
+              minWidth: 180,
+              padding: "8px 10px",
+              fontSize: 12,
+              background: "var(--surface2)",
+              border: "1px solid var(--border2)",
+              borderRadius: 6,
+              color: "var(--off-white)",
+            }}
+          />
+          <button
+            type="button"
+            onClick={runRagProbe}
+            disabled={ragProbeLoading}
+            style={{
+              padding: "8px 14px",
+              fontSize: 12,
+              background: "var(--surface2)",
+              color: "var(--off-white)",
+              border: "1px solid var(--border2)",
+              borderRadius: 6,
+              cursor: ragProbeLoading ? "wait" : "pointer",
+            }}
+          >
+            {ragProbeLoading ? "Buscando…" : "Probar recuperación"}
+          </button>
+        </div>
+        {ragProbeError && <p style={{ marginTop: 8, fontSize: 12, color: "var(--sage)" }}>{ragProbeError}</p>}
+        {ragProbeResult && (
+          <div style={{ marginTop: 12, fontSize: 12 }}>
+            <p style={{ color: "var(--muted)", marginBottom: 8 }}>
+              <strong>{ragProbeResult.total}</strong> chunks
+              {ragProbeResult.askedCanonical && ragProbeResult.byCanonicalUsed && (
+                <span> (incl. por ley solicitada: {ragProbeResult.askedCanonical})</span>
+              )}
+            </p>
+            <ul style={{ listStyle: "none", paddingLeft: 0, maxHeight: 280, overflowY: "auto" }}>
+              {ragProbeResult.chunks.map((c, i) => (
+                <li key={i} style={{ marginBottom: 10, padding: 8, background: "var(--surface2)", borderRadius: 6 }}>
+                  <div style={{ fontWeight: 600, color: "var(--off-white)" }}>{c.title || "(sin título)"}</div>
+                  {c.canonical_key && <span style={{ color: "var(--muted)", fontSize: 11 }}> {c.canonical_key}</span>}
+                  <div style={{ marginTop: 4, color: "var(--muted)", fontSize: 11 }}>{c.textPreview}</div>
+                </li>
+              ))}
+            </ul>
+          </div>
+        )}
+      </details>
     </div>
   );
 }
