@@ -1,9 +1,9 @@
 /**
- * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → verificación multi-IA → ingest → INGESTED/FAILED).
- * Busca en consultoria.gov.do y gacetaoficial.gob.do; verifica con Claude + Grok + GPT-4o-mini; solo ingesta si ≥2/3 confirman.
+ * Worker: procesa corpus_enrichment_queue (PENDING → FETCHING → verificación OpenAI → ingest ley + reglamentos).
+ * Busca en consultoria.gov.do y gacetaoficial.gob.do; verifica solo con OpenAI; si hay ley XX-XX, busca e ingesta reglamentos también.
  *
  * Uso: npm run enrich:queue [-- --once] [--limit N] [--dry-run] [--force]
- * Env: FIRECRAWL_API_KEY, SUPABASE_*, OPENAI_API_KEY; para verificación: ANTHROPIC_API_KEY, GROQ_API_KEY (o XAI_API_KEY)
+ * Env: FIRECRAWL_API_KEY, SUPABASE_*, OPENAI_API_KEY
  */
 import "dotenv/config";
 import { resolve } from "path";
@@ -19,7 +19,11 @@ import {
   upsertInstrument,
   ingestVersionAndChunks,
 } from "./_consultoria_pipeline";
-import { searchAndDownloadLaw, verifyWithMultipleAIs } from "../src/lib/enrichment/enrich";
+import {
+  searchAndDownloadLaw,
+  searchAndDownloadLawCandidates,
+  verifyWithMultipleAIs,
+} from "../src/lib/enrichment/enrich";
 
 dotenv.config({ path: resolve(process.cwd(), ".env.local") });
 
@@ -82,15 +86,12 @@ async function processOne(
     return;
   }
 
-  // Verificación multi-IA: al menos 2 de 3 deben confirmar (norma correcta y vigente)
+  // Verificación solo OpenAI (GPT-4o-mini): debe responder YES
   const verification = await verifyWithMultipleAIs(best.markdown, best.title, row.query, {
-    anthropicApiKey: process.env.ANTHROPIC_API_KEY ?? null,
-    groqApiKey: process.env.GROQ_API_KEY ?? null,
-    xaiApiKey: process.env.XAI_API_KEY ?? null,
     openaiApiKey: process.env.OPENAI_API_KEY ?? null,
   });
   if (!verification.verified) {
-    const errDetail = `Verificación multi-IA no superada (${verification.votes}/${verification.total} confirmaciones). ${verification.details.join("; ")}`;
+    const errDetail = `Verificación OpenAI no superada (${verification.votes}/${verification.total}). ${verification.details.join("; ")}`;
     await updateStatus("FAILED", { error: errDetail, meta: { ...(row.meta || {}), verification: verification.details } });
     return;
   }
@@ -154,7 +155,58 @@ async function processOne(
   });
 
   if (result.ok) {
-    await updateStatus("INGESTED", { meta: { ...(row.meta || {}), versionId: result.versionId, chunksCount: result.chunksCount } });
+    const meta: Record<string, unknown> = { ...(row.meta || {}), versionId: result.versionId, chunksCount: result.chunksCount };
+    let reglamentosIngested = 0;
+
+    // Si la consulta menciona una ley (ej. ley 10-07), buscar e ingestar reglamentos asociados
+    const lawMatch = row.query.match(/ley\s*(\d{2,3}-\d{2})/i);
+    if (lawMatch && !dryRun) {
+      const lawNum = lawMatch[1];
+      try {
+        const reglamentos = await searchAndDownloadLawCandidates(
+          `reglamento ley ${lawNum}`,
+          firecrawlKey,
+          5
+        );
+        for (const reg of reglamentos) {
+          const ver = await verifyWithMultipleAIs(reg.markdown, reg.title, `reglamento ley ${lawNum}`, {
+            openaiApiKey: process.env.OPENAI_API_KEY ?? null,
+          });
+          if (!ver.verified) continue;
+          const regText = normalizeText(reg.markdown);
+          const regHash = sha256(regText);
+          const { canonical_key: regKey, type: regType, number: regNum } = deriveCanonicalFromTitle(reg.title, reg.url);
+          const regPublished = extractPublishedDate(reg.markdown, undefined) ?? new Date().toISOString().slice(0, 10);
+          const { data: existingReg } = await supabase
+            .from("instrument_versions")
+            .select("id")
+            .eq("content_hash", regHash)
+            .limit(1)
+            .maybeSingle();
+          if (existingReg?.id && !force) continue;
+          const regUpsert = await upsertInstrument(supabase, regKey, reg.title, regType, regNum);
+          if ("error" in regUpsert) continue;
+          const regResult = await ingestVersionAndChunks(supabase, openai, {
+            instrumentId: regUpsert.instrumentId,
+            sourceId,
+            sourceUrl: reg.url,
+            contentText: regText,
+            contentHash: regHash,
+            publishedDate: regPublished,
+            canonicalKey: regKey,
+          });
+          if (regResult.ok) {
+            reglamentosIngested++;
+            console.log("   Reglamento ingerido:", regKey, reg.title.slice(0, 50));
+          }
+        }
+      } catch (e) {
+        console.warn("   Error buscando reglamentos:", e instanceof Error ? e.message : String(e));
+      }
+      if (reglamentosIngested > 0) meta.reglamentosIngested = reglamentosIngested;
+    }
+
+    await updateStatus("INGESTED", { meta });
   } else if (result.skipped === "dedup-by-hash") {
     await updateStatus("INGESTED", { meta: { ...(row.meta || {}), note: "dedup-by-hash" } });
   } else {

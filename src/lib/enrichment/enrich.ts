@@ -70,6 +70,53 @@ export async function searchAndDownloadLaw(
   return null;
 }
 
+/**
+ * Igual que searchAndDownloadLaw pero devuelve hasta maxResults candidatos (para reglamentos).
+ */
+export async function searchAndDownloadLawCandidates(
+  query: string,
+  firecrawlApiKey: string,
+  maxResults: number = 5
+): Promise<SearchResult[]> {
+  const searchQuery = `site:consultoria.gov.do OR site:gacetaoficial.gob.do ${query}`.slice(0, 200);
+  const res = await fetch(FIRECRAWL_SEARCH_URL, {
+    method: "POST",
+    headers: {
+      Authorization: `Bearer ${firecrawlApiKey}`,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      query: searchQuery,
+      limit: Math.max(5, maxResults),
+      scrapeOptions: { formats: ["markdown"] },
+    }),
+  });
+  if (!res.ok) {
+    const err = await res.text();
+    throw new Error(`Firecrawl search failed: ${res.status} ${err}`);
+  }
+  const data = (await res.json()) as {
+    success?: boolean;
+    data?: Array<{ url?: string; title?: string; markdown?: string }>;
+  };
+  if (!data.success || !Array.isArray(data.data)) return [];
+
+  const out: SearchResult[] = [];
+  for (const d of data.data) {
+    if (out.length >= maxResults) break;
+    const url = (d.url ?? "").trim();
+    if (!url || !isOfficialDomain(url)) continue;
+    const markdown = (d.markdown ?? "").trim();
+    if (markdown.length < MIN_CONTENT_LENGTH) continue;
+    out.push({
+      url,
+      title: (d.title ?? "Sin título").trim(),
+      markdown,
+    });
+  }
+  return out;
+}
+
 function normalizeYesNo(text: string): "yes" | "no" | "unknown" {
   const t = text.trim().toLowerCase().slice(0, 50);
   if (/^\s*yes\s*$/i.test(t) || /^\s*si\s*$/i.test(t) || /sí\s*$/i.test(t)) return "yes";
@@ -78,8 +125,7 @@ function normalizeYesNo(text: string): "yes" | "no" | "unknown" {
 }
 
 /**
- * Verifica con Claude, Grok y GPT-4o-mini que el texto corresponda a la norma correcta y versión vigente.
- * Si al menos 2 de 3 confirman (YES) → verified: true.
+ * Verificación solo con OpenAI (GPT-4o-mini). verified = true si OpenAI responde YES.
  */
 export async function verifyWithMultipleAIs(
   text: string,
@@ -93,76 +139,23 @@ export async function verifyWithMultipleAIs(
   }
 ): Promise<{ verified: boolean; votes: number; total: number; details: string[] }> {
   const excerpt = text.slice(0, MAX_TEXT_FOR_VERIFY);
+  const lawMatch = userQuery.match(/ley\s*(\d{2,3}-\d{2})/i);
+  const lawLine = lawMatch ? `El usuario preguntó específicamente por la Ley ${lawMatch[1]}.` : `Consulta del usuario: ${userQuery.slice(0, 200)}`;
   const prompt = `El siguiente texto es un fragmento de normativa de República Dominicana.
 Título del documento: ${title}
-Consulta del usuario que motivó la búsqueda: ${userQuery.slice(0, 300)}
+${lawLine}
 
 Fragmento del texto:
 ---
 ${excerpt}
 ---
 
-¿Este texto corresponde a la norma correcta y a una versión vigente (no derogada) que es relevante para la consulta? Responde ÚNICAMENTE "YES" o "NO".`;
+¿Este documento ES o CONTIENE la norma que el usuario busca y está vigente (no derogada)? Responde ÚNICAMENTE "YES" o "NO".`;
 
   const details: string[] = [];
   let yesCount = 0;
   let total = 0;
 
-  // Claude
-  if (options.anthropicApiKey) {
-    try {
-      const r = await fetch("https://api.anthropic.com/v1/messages", {
-        method: "POST",
-        headers: {
-          "Content-Type": "application/json",
-          "x-api-key": options.anthropicApiKey,
-          "anthropic-version": "2023-06-01",
-        },
-        body: JSON.stringify({
-          model: "claude-3-5-haiku-20241022",
-          max_tokens: 10,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      if (r.ok) {
-        const j = (await r.json()) as { content?: Array<{ text?: string }> };
-        const answer = j.content?.[0]?.text ?? "";
-        total++;
-        const v = normalizeYesNo(answer);
-        if (v === "yes") yesCount++;
-        details.push(`Claude: ${v}`);
-      }
-    } catch (e) {
-      details.push(`Claude: error ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  // Groq (OpenAI-compatible)
-  if (options.groqApiKey) {
-    try {
-      const r = await fetch("https://api.groq.com/openai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.groqApiKey}` },
-        body: JSON.stringify({
-          model: "llama-3.3-70b-versatile",
-          max_tokens: 10,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      if (r.ok) {
-        const j = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
-        const answer = j.choices?.[0]?.message?.content ?? "";
-        total++;
-        const v = normalizeYesNo(answer);
-        if (v === "yes") yesCount++;
-        details.push(`Groq: ${v}`);
-      }
-    } catch (e) {
-      details.push(`Groq: error ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  // OpenAI GPT-4o-mini
   if (options.openaiApiKey) {
     try {
       const r = await fetch("https://api.openai.com/v1/chat/completions", {
@@ -187,31 +180,6 @@ ${excerpt}
     }
   }
 
-  // XAI Grok como respaldo si no hay Groq
-  if (total < 2 && options.xaiApiKey) {
-    try {
-      const r = await fetch("https://api.x.ai/v1/chat/completions", {
-        method: "POST",
-        headers: { "Content-Type": "application/json", Authorization: `Bearer ${options.xaiApiKey}` },
-        body: JSON.stringify({
-          model: "grok-2-1212",
-          max_tokens: 10,
-          messages: [{ role: "user", content: prompt }],
-        }),
-      });
-      if (r.ok) {
-        const j = (await r.json()) as { choices?: Array<{ message?: { content?: string } }> };
-        const answer = j.choices?.[0]?.message?.content ?? "";
-        total++;
-        const v = normalizeYesNo(answer);
-        if (v === "yes") yesCount++;
-        details.push(`xAI: ${v}`);
-      }
-    } catch (e) {
-      details.push(`xAI: error ${e instanceof Error ? e.message : String(e)}`);
-    }
-  }
-
-  const verified = total >= 2 && yesCount >= 2;
+  const verified = total >= 1 && yesCount >= 1;
   return { verified, votes: yesCount, total, details };
 }
